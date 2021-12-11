@@ -8,8 +8,10 @@ import com.google.common.base.Preconditions;
 import org.apache.commons.lang3.Range;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.umlg.sqlg.predicate.FullText;
+import org.umlg.sqlg.sql.parse.ColumnList;
 import org.umlg.sqlg.sql.parse.SchemaTableTree;
 import org.umlg.sqlg.strategy.SqlgSqlExecutor;
 import org.umlg.sqlg.structure.*;
@@ -56,6 +58,10 @@ public interface SqlDialect {
     }
 
     default boolean supportsCascade() {
+        return true;
+    }
+
+    default boolean supportsIfExists() {
         return true;
     }
 
@@ -375,16 +381,15 @@ public interface SqlDialect {
 
     default String indexName(SchemaTable schemaTable, String prefix, String postfix, List<String> columns) {
         Preconditions.checkState(!columns.isEmpty(), "SqlDialect.indexName may not be called with an empty list of columns");
-        StringBuilder sb = new StringBuilder();
-        sb.append(schemaTable.getSchema());
-        sb.append("_");
-        sb.append(prefix);
-        sb.append(schemaTable.getTable());
-        sb.append("_");
-        //noinspection OptionalGetWithoutIsPresent
-        sb.append(columns.stream().reduce((a, b) -> a + "_" + b).get());
-        sb.append(postfix);
-        return sb.toString();
+        String sb = schemaTable.getSchema() +
+                "_" +
+                prefix +
+                schemaTable.getTable() +
+                "_" +
+                //noinspection OptionalGetWithoutIsPresent
+                columns.stream().reduce((a, b) -> a + "_" + b).orElseThrow() +
+                postfix;
+        return sb;
     }
 
 
@@ -514,6 +519,10 @@ public interface SqlDialect {
         return false;
     }
 
+    default boolean isH2() {
+        return false;
+    }
+
     default <T> T getGis(SqlgGraph sqlgGraph) {
         throw SqlgExceptions.gisNotSupportedException();
     }
@@ -575,7 +584,7 @@ public interface SqlDialect {
      * These are internal columns used by sqlg that must be ignored when loading elements.
      * eg. '_copy_dummy' when doing using the copy command on postgresql.
      *
-     * @return
+     * @return The columns to ignore.
      */
     default List<String> columnsToIgnore() {
         return Collections.emptyList();
@@ -583,10 +592,6 @@ public interface SqlDialect {
 
     default String sqlgSqlgSchemaCreationScript() {
         return this.createSchemaStatement(Schema.SQLG_SCHEMA) + (needsSemicolon() ? ";" : "");
-    }
-
-    default String sqlgGuiSchemaCreationScript() {
-        return this.createSchemaStatement(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA) + (needsSemicolon() ? ";" : "");
     }
 
     List<String> sqlgTopologyCreationScripts();
@@ -605,7 +610,7 @@ public interface SqlDialect {
      * range condition
      *
      * @param r range
-     * @return
+     * @return the range clause.
      */
     default String getRangeClause(Range<Long> r) {
         return "LIMIT " + (r.getMaximum() - r.getMinimum()) + " OFFSET " + r.getMinimum();
@@ -626,7 +631,19 @@ public interface SqlDialect {
         throw new UnsupportedOperationException("FullText search is not supported on this database");
     }
 
+    default String getArrayContainsQueryText(String column) {
+        throw new UnsupportedOperationException("Array Contains is not supported on this database");
+    }
+
+    default String getArrayOverlapsQueryText(String column) {
+        throw new UnsupportedOperationException("Array Overlaps is not supported on this database");
+    }
+
     default boolean schemaExists(DatabaseMetaData metadata, String schema) throws SQLException {
+//        ResultSet schemas = metadata.getSchemas();
+//        while (schemas.next()) {
+//            System.out.println(schemas.getString(1));
+//        }
         ResultSet schemaRs = metadata.getSchemas(null, schema);
         return schemaRs.next();
     }
@@ -778,7 +795,7 @@ public interface SqlDialect {
      * @return true if 'CREATE SCHEMA IF NOT EXISTS' works.
      */
     default boolean supportsSchemaIfNotExists() {
-        return true;
+        return false;
     }
 
     String sqlgCreateTopologyGraph();
@@ -797,9 +814,9 @@ public interface SqlDialect {
      * @return
      */
     @SuppressWarnings("Duplicates")
-    default List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> drop(SqlgGraph sqlgGraph, String leafElementsToDelete, @Nullable String edgesToDelete, LinkedList<SchemaTableTree> distinctQueryStack) {
+    default List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> drop(SqlgGraph sqlgGraph, String leafElementsToDelete, @Nullable String edgesToDelete, LinkedList<SchemaTableTree> distinctQueryStack) {
 
-        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> sqls = new ArrayList<>();
+        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> sqls = new ArrayList<>();
         SchemaTableTree last = distinctQueryStack.getLast();
 
         SchemaTableTree lastEdge = null;
@@ -854,7 +871,7 @@ public interface SqlDialect {
                     sb.append(" IN\n\t(");
                     sb.append(leafElementsToDelete);
                     sb.append(")");
-                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), SchemaTable.of(edgeLabel.getSchema().getName(), Topology.EDGE_PREFIX + edgeLabel.getName())));
+                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
                 }
             }
             for (Map.Entry<String, EdgeLabel> edgeLabelEntry : lastVertexLabel.getInEdgeLabels().entrySet()) {
@@ -883,7 +900,7 @@ public interface SqlDialect {
                     sb.append(" IN\n\t(");
                     sb.append(leafElementsToDelete);
                     sb.append(")");
-                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), SchemaTable.of(edgeLabel.getSchema().getName(), Topology.EDGE_PREFIX + edgeLabel.getName())));
+                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
                 }
             }
         }
@@ -891,7 +908,7 @@ public interface SqlDialect {
         //Need to defer foreign key constraint checks.
         if (queryTraversesEdge) {
             String edgeTableName = (maybeWrapInQoutes(lastEdge.getSchemaTable().getSchema())) + "." + maybeWrapInQoutes(lastEdge.getSchemaTable().getTable());
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOffReferentialConstraintCheck(edgeTableName), lastEdge.getSchemaTable()));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOffReferentialConstraintCheck(edgeTableName), false));
         }
         //Delete the leaf vertices, if there are foreign keys then its been deferred.
         StringBuilder sb = new StringBuilder();
@@ -914,7 +931,7 @@ public interface SqlDialect {
         }
         sb.append(leafElementsToDelete);
         sb.append(")");
-        sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), null));
+        sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
 
         if (queryTraversesEdge) {
             sb = new StringBuilder();
@@ -937,12 +954,12 @@ public interface SqlDialect {
             }
             sb.append(edgesToDelete);
             sb.append(")");
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.EDGE, sb.toString(), lastEdge.getSchemaTable()));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.EDGE, sb.toString(), false));
         }
         //Enable the foreign key constraint
         if (queryTraversesEdge) {
             String edgeTableName = (maybeWrapInQoutes(lastEdge.getSchemaTable().getSchema())) + "." + maybeWrapInQoutes(lastEdge.getSchemaTable().getTable());
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOnReferentialConstraintCheck(edgeTableName), null));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOnReferentialConstraintCheck(edgeTableName), false));
         }
         return sqls;
     }
@@ -1128,13 +1145,13 @@ public interface SqlDialect {
         throw new IllegalStateException("alterForeignKeyToDeferrable is not supported.");
     }
 
-    default List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> sqlTruncate(SqlgGraph sqlgGraph, SchemaTable schemaTable) {
+    default List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> sqlTruncate(SqlgGraph sqlgGraph, SchemaTable schemaTable) {
         Preconditions.checkState(schemaTable.isWithPrefix(), "SqlDialect.sqlTruncate' schemaTable must start with a prefix %s or %s", Topology.VERTEX_PREFIX, Topology.EDGE_PREFIX);
         return Collections.singletonList(
                 Triple.of(
                         SqlgSqlExecutor.DROP_QUERY.TRUNCATE,
                         "TRUNCATE TABLE " + maybeWrapInQoutes(schemaTable.getSchema()) + "." + maybeWrapInQoutes(schemaTable.getTable()),
-                        schemaTable
+                        false
                 )
         );
     }
@@ -1152,6 +1169,10 @@ public interface SqlDialect {
     }
 
     default List<String> addPartitionTables() {
+        throw new IllegalStateException("Partitioning is not supported.");
+    }
+
+    default List<String> addHashPartitionColumns() {
         throw new IllegalStateException("Partitioning is not supported.");
     }
 
@@ -1296,5 +1317,70 @@ public interface SqlDialect {
 
     default int getConnectionBackendPid(Connection connection) {
         return -1;
+    }
+
+    default String toSelectString(boolean partOfDuplicateQuery, ColumnList.Column column, String alias) {
+        StringBuilder sb = new StringBuilder();
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null) {
+            sb.append(column.getAggregateFunction().toUpperCase());
+            sb.append("(");
+        }
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null && column.getAggregateFunction().equals(GraphTraversal.Symbols.count)) {
+            sb.append("1");
+        } else {
+            sb.append(maybeWrapInQoutes(column.getSchema()));
+            sb.append(".");
+            sb.append(maybeWrapInQoutes(column.getTable()));
+            sb.append(".");
+            sb.append(maybeWrapInQoutes(column.getColumn()));
+        }
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null) {
+            sb.append(") AS ").append(maybeWrapInQoutes(alias));
+            if (column.getAggregateFunction().equalsIgnoreCase("avg")) {
+                sb.append(", COUNT(1) AS ").append(maybeWrapInQoutes(alias + "_weight"));
+            }
+        } else {
+            sb.append(" AS ").append(maybeWrapInQoutes(alias));
+        }
+        return sb.toString();
+    }
+
+    default boolean isTimestampz(String typeName) {
+        return false;
+    }
+
+    default String dropIndex(SqlgGraph sqlgGraph, AbstractLabel parentLabel, String name) {
+        StringBuilder sql = new StringBuilder("DROP INDEX IF EXISTS ");
+        SqlDialect sqlDialect = sqlgGraph.getSqlDialect();
+        sql.append(sqlDialect.maybeWrapInQoutes(parentLabel.getSchema().getName()));
+        sql.append(".");
+        sql.append(sqlDialect.maybeWrapInQoutes(name));
+        if (sqlDialect.needsSemicolon()) {
+            sql.append(";");
+        }
+        return sql.toString();
+    }
+
+    /**
+     * This is only needed for Hsqldb where we are unable to check for the existence of Sqlg's schemas
+     * @return
+     */
+    default boolean canUserCreateSchemas(SqlgGraph sqlgGraph) {
+        return true;
+    }
+
+    default String renameColumn(String schema, String table, String column, String newName) {
+        StringBuilder sql = new StringBuilder("ALTER TABLE ");
+        sql.append(maybeWrapInQoutes(schema));
+        sql.append(".");
+        sql.append(maybeWrapInQoutes(table));
+        sql.append(" RENAME COLUMN ");
+        sql.append(maybeWrapInQoutes(column));
+        sql.append(" TO ");
+        sql.append(maybeWrapInQoutes(newName));
+        if (needsSemicolon()) {
+            sql.append(";");
+        }
+        return sql.toString();
     }
 }

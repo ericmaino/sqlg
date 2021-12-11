@@ -6,9 +6,11 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableSet;
 import org.apache.commons.lang3.tuple.Triple;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.structure.Property;
 import org.h2.jdbc.JdbcArray;
 import org.umlg.sqlg.sql.dialect.BaseSqlDialect;
+import org.umlg.sqlg.sql.parse.ColumnList;
 import org.umlg.sqlg.structure.PropertyType;
 import org.umlg.sqlg.structure.SchemaTable;
 import org.umlg.sqlg.structure.SqlgGraph;
@@ -34,7 +36,12 @@ public class H2Dialect extends BaseSqlDialect {
 
     @Override
     public boolean supportsCascade() {
-        return false;
+        return true;
+    }
+
+    @Override
+    public boolean isH2() {
+        return true;
     }
 
     @Override
@@ -609,6 +616,8 @@ public class H2Dialect extends BaseSqlDialect {
                 "\"from\" VARCHAR, " +
                 "\"to\" VARCHAR, " +
                 "\"in\" VARCHAR, " +
+                "\"modulus\" INTEGER, " +
+                "\"remainder\" INTEGER, " +
                 "\"partitionType\" VARCHAR, " +
                 "\"partitionExpression\" VARCHAR);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_property\" (" +
@@ -621,11 +630,6 @@ public class H2Dialect extends BaseSqlDialect {
                 "\"createdOn\" TIMESTAMP, " +
                 "\"name\" VARCHAR, " +
                 "\"index_type\" VARCHAR);");
-
-        result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_globalUniqueIndex\" (" +
-                "\"ID\" IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP, " +
-                "\"name\" VARCHAR);");
 
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"E_schema_vertex\"(" +
                 "\"ID\" IDENTITY PRIMARY KEY, " +
@@ -744,12 +748,6 @@ public class H2Dialect extends BaseSqlDialect {
                 "\"pid\" INTEGER, " +
                 "\"log\" VARCHAR);");
 
-        result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"E_globalUniqueIndex_property\"(" +
-                "\"ID\" IDENTITY PRIMARY KEY, " +
-                "\"sqlg_schema.property__I\" BIGINT, " +
-                "\"sqlg_schema.globalUniqueIndex__O\" BIGINT, " +
-                "FOREIGN KEY (\"sqlg_schema.property__I\") REFERENCES \"sqlg_schema\".\"V_property\" (\"ID\"), " +
-                "FOREIGN KEY (\"sqlg_schema.globalUniqueIndex__O\") REFERENCES \"sqlg_schema\".\"V_globalUniqueIndex\" (\"ID\"));");
         return result;
     }
 
@@ -1008,6 +1006,14 @@ public class H2Dialect extends BaseSqlDialect {
     }
 
     @Override
+    public List<String> addHashPartitionColumns() {
+        return List.of(
+                "ALTER TABLE \"sqlg_schema\".\"V_partition\" ADD COLUMN \"modulus\" INTEGER;",
+                "ALTER TABLE \"sqlg_schema\".\"V_partition\" ADD COLUMN \"remainder\" INTEGER;"
+        );
+    }
+
+    @Override
     public String addDbVersionToGraph(DatabaseMetaData metadata) {
         try {
             return "ALTER TABLE \"sqlg_schema\".\"V_graph\" ADD COLUMN \"dbVersion\" VARCHAR DEFAULT '" + metadata.getDatabaseProductVersion() + "';";
@@ -1019,5 +1025,47 @@ public class H2Dialect extends BaseSqlDialect {
     @Override
     public void grantReadOnlyUserPrivilegesToSqlgSchemas(SqlgGraph sqlgGraph) {
         //Do nothing, we are not testing readOnly on H2
+    }
+
+    @Override
+    public String toSelectString(boolean partOfDuplicateQuery, ColumnList.Column column, String alias) {
+        StringBuilder sb = new StringBuilder();
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null) {
+            if (column.getAggregateFunction().equals("avg")) {
+                sb.append(column.getAggregateFunction().toUpperCase());
+                sb.append("(CAST(");
+            } else {
+                sb.append(column.getAggregateFunction().toUpperCase());
+                sb.append("(");
+            }
+        }
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null && column.getAggregateFunction().equals(GraphTraversal.Symbols.count)) {
+            sb.append("1");
+        } else {
+            sb.append(maybeWrapInQoutes(column.getSchema()));
+            sb.append(".");
+            sb.append(maybeWrapInQoutes(column.getTable()));
+            sb.append(".");
+            sb.append(maybeWrapInQoutes(column.getColumn()));
+        }
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null) {
+            if (column.getAggregateFunction().equals("avg")) {
+                sb.append(" as DOUBLE PRECISION)) AS ").append(maybeWrapInQoutes(alias));
+            } else {
+                sb.append(" ) AS ").append(maybeWrapInQoutes(alias));
+            }
+            if (column.getAggregateFunction().equals("avg")) {
+                sb.append(", COUNT(1) AS ").append(maybeWrapInQoutes(alias + "_weight"));
+            }
+        } else {
+            sb.append(" AS ").append(maybeWrapInQoutes(alias));
+        }
+        return sb.toString();
+    }
+
+    @Override
+    public boolean isTimestampz(String typeName) {
+        //H2 is not using timestamps with zones
+        return false;
     }
 }

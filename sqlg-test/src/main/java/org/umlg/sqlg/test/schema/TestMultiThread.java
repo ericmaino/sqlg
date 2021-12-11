@@ -1,7 +1,8 @@
 package org.umlg.sqlg.test.schema;
 
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import com.google.common.base.Preconditions;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.T;
@@ -23,8 +24,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-
-import static java.util.concurrent.Executors.newFixedThreadPool;
 
 /**
  * Date: 2014/09/24
@@ -101,11 +100,11 @@ public class TestMultiThread extends BaseTest {
     @Test
     public void shouldExecuteWithCompetingThreads() throws InterruptedException {
         //Create the schema upfront so that graphs (Hsqldb, H2, Mysql...) that do not support transactional schema's can succeed.
-        VertexLabel vertexLabel = this.sqlgGraph.getTopology().ensureVertexLabelExist("vertex", new HashMap<String, PropertyType>() {{
+        VertexLabel vertexLabel = this.sqlgGraph.getTopology().ensureVertexLabelExist("vertex", new HashMap<>() {{
             put("test", PropertyType.LONG);
             put("blah", PropertyType.DOUBLE);
         }});
-        vertexLabel.ensureEdgeLabelExist("friend", vertexLabel, new HashMap<String, PropertyType>() {{
+        vertexLabel.ensureEdgeLabelExist("friend", vertexLabel, new HashMap<>() {{
             put("bloop", PropertyType.INTEGER);
         }});
         this.sqlgGraph.tx().commit();
@@ -161,7 +160,8 @@ public class TestMultiThread extends BaseTest {
                 }
             }.start();
         }
-        countDownLatch.await(5, TimeUnit.MINUTES);
+        boolean success = countDownLatch.await(5, TimeUnit.MINUTES);
+        Assert.assertTrue(success);
         Assert.assertEquals(completedThreads.get(), totalThreads);
         System.out.println(vertices.get());
         assertVertexEdgeCounts(graph, vertices.get(), edges.get());
@@ -181,46 +181,61 @@ public class TestMultiThread extends BaseTest {
     @Test
     public void testMultiThreadVertices() throws InterruptedException {
         Set<Integer> tables = new ConcurrentSkipListSet<>();
-        ExecutorService executorService = newFixedThreadPool(10);
-        for (int j = 0; j < 100; j++) {
+        ExecutorService executorService = Executors.newFixedThreadPool(10);
+        for (int j = 0; j < 20; j++) {
+            int finalJ = j;
             executorService.submit(() -> {
-                final Random random = new Random();
-                int randomInt = random.nextInt();
-                for (int i = 0; i < 10; i++) {
-                    sqlgGraph.addVertex(T.label, "Person" + String.valueOf(randomInt), "name", String.valueOf(randomInt));
-                    tables.add(randomInt);
+                try {
+                    final Random random = new Random();
+                    random.nextInt();
+                    for (int i = 0; i < 10; i++) {
+                        sqlgGraph.addVertex(T.label, "Person" + finalJ, "name", String.valueOf(finalJ));
+                    }
+                    sqlgGraph.tx().commit();
+                    tables.add(finalJ);
+                } catch (Exception e) {
+                    logger.error(e.getMessage(), e);
+                    Assert.fail(e.getMessage());
+                    sqlgGraph.tx().rollback();
                 }
-                sqlgGraph.tx().commit();
             });
         }
         executorService.shutdown();
-        executorService.awaitTermination(6000, TimeUnit.SECONDS);
+        if (executorService.awaitTermination(6000, TimeUnit.SECONDS)) {
+            logger.info("normal termination");
+        } else {
+            Assert.fail("failed to terminate executor service normally");
+        }
         for (Integer i : tables) {
-            Assert.assertTrue(this.sqlgGraph.getTopology().getVertexLabel(this.sqlgGraph.getSqlDialect().getPublicSchema(), "Person" + String.valueOf(i)).isPresent());
-            Assert.assertEquals(10, this.sqlgGraph.traversal().V().has(T.label, "Person" + String.valueOf(i)).has("name", String.valueOf(i)).count().next().intValue());
+            logger.info(String.format("looking for 'Person%d'", i));
+            Assert.assertTrue(String.format("Person%d not found", i), this.sqlgGraph.getTopology().getVertexLabel(this.sqlgGraph.getSqlDialect().getPublicSchema(), "Person" + i).isPresent());
+            Assert.assertEquals(10, this.sqlgGraph.traversal().V().has(T.label, "Person" + i).has("name", String.valueOf(i)).count().next().intValue());
         }
     }
 
     @Test
     public void testMultiThreadEdges() throws InterruptedException {
+        //For some reason Maria don't like this one on teamcity
+        Assume.assumeFalse(isMariaDb());
         Vertex v1 = sqlgGraph.addVertex(T.label, "Person", "name", "0");
         sqlgGraph.tx().commit();
         Set<Integer> tables = new ConcurrentSkipListSet<>();
-        ExecutorService executorService = newFixedThreadPool(10);
+        ExecutorService executorService = Executors.newFixedThreadPool(10);
         for (int j = 0; j < 100; j++) {
             executorService.submit(() -> {
                 final Random random = new Random();
                 int randomInt = random.nextInt();
                 for (int i = 0; i < 10; i++) {
-                    Vertex v2 = sqlgGraph.addVertex(T.label, "Person" + String.valueOf(randomInt), "name", String.valueOf(randomInt));
-                    v1.addEdge("test" + String.valueOf(randomInt), v2);
+                    Vertex v2 = sqlgGraph.addVertex(T.label, "Person" + randomInt, "name", String.valueOf(randomInt));
+                    v1.addEdge("test" + randomInt, v2);
                     tables.add(randomInt);
                 }
                 sqlgGraph.tx().commit();
             });
         }
         executorService.shutdown();
-        executorService.awaitTermination(60, TimeUnit.SECONDS);
+        boolean success = executorService.awaitTermination(60, TimeUnit.SECONDS);
+        Assert.assertTrue(success);
         for (Integer i : tables) {
             Assert.assertTrue(this.sqlgGraph.getTopology().getVertexLabel(this.sqlgGraph.getSqlDialect().getPublicSchema(), "Person" + i).isPresent());
             Assert.assertEquals(10, this.sqlgGraph.traversal().V().has(T.label, "Person" + i).has("name", String.valueOf(i)).count().next().intValue());
@@ -231,7 +246,7 @@ public class TestMultiThread extends BaseTest {
     @Test
     public void testMultiThreadCreateSchemas() throws InterruptedException, ExecutionException {
         Set<Integer> schemas = new HashSet<>();
-        ExecutorService executorService = newFixedThreadPool(200);
+        ExecutorService executorService = Executors.newFixedThreadPool(200);
         for (int i = 0; i < 10_000; i++) {
             Integer schema = new Random().nextInt(99);
             schemas.add(schema);
@@ -242,7 +257,8 @@ public class TestMultiThread extends BaseTest {
             f.get();
         }
         executorService.shutdown();
-        executorService.awaitTermination(5, TimeUnit.SECONDS);
+        boolean terminated = executorService.awaitTermination(5, TimeUnit.SECONDS);
+        Assert.assertTrue(terminated);
         //+ 1 for the public schema
         Assert.assertEquals(schemas.size() + 1, this.sqlgGraph.getTopology().getSchemas().size());
     }
@@ -254,7 +270,8 @@ public class TestMultiThread extends BaseTest {
     public void testMultipleGraphs() throws Exception {
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
         try {
-            configuration = new PropertiesConfiguration(sqlProperties);
+            Configurations configs = new Configurations();
+            configuration = configs.properties(sqlProperties);
             Assume.assumeTrue(isPostgres());
             configuration.addProperty("distributed", true);
             if (!configuration.containsKey("jdbc.url"))
@@ -263,7 +280,26 @@ public class TestMultiThread extends BaseTest {
         } catch (ConfigurationException e) {
             throw new RuntimeException(e);
         }
-        ExecutorService executorService = newFixedThreadPool(50);
+        VertexLabel personTrue = this.sqlgGraph.getTopology().getPublicSchema().ensureVertexLabelExist("Person_True", new LinkedHashMap<>() {{
+            put("name", PropertyType.STRING);
+        }});
+        VertexLabel addressTrue = this.sqlgGraph.getTopology().getPublicSchema().ensureVertexLabelExist("Address_True", new LinkedHashMap<>() {{
+            put("name", PropertyType.STRING);
+        }});
+        personTrue.ensureEdgeLabelExist("address_True", addressTrue, new LinkedHashMap<>() {{
+            put("name", PropertyType.STRING);
+        }});
+        VertexLabel personLabel = this.sqlgGraph.getTopology().getPublicSchema().ensureVertexLabelExist("Person", new LinkedHashMap<>() {{
+            put("name", PropertyType.STRING);
+        }});
+        VertexLabel addressLabel = this.sqlgGraph.getTopology().getPublicSchema().ensureVertexLabelExist("Address", new LinkedHashMap<>() {{
+            put("name", PropertyType.STRING);
+        }});
+        personLabel.ensureEdgeLabelExist("address", addressLabel, new LinkedHashMap<>() {{
+            put("name", PropertyType.STRING);
+        }});
+        this.sqlgGraph.tx().commit();
+        ExecutorService executorService = Executors.newFixedThreadPool(50);
         int loop = 400;
         for (int i = 0; i < loop; i++) {
             String n = "person" + i;
@@ -289,7 +325,8 @@ public class TestMultiThread extends BaseTest {
             });
         }
         executorService.shutdown();
-        executorService.awaitTermination(100, TimeUnit.SECONDS);
+        boolean terminated = executorService.awaitTermination(100, TimeUnit.SECONDS);
+        Assert.assertTrue(terminated);
         try (SqlgGraph sqlgGraph1 = SqlgGraph.open(configuration)) {
             Assert.assertEquals(400, sqlgGraph1.traversal().V().hasLabel("Person_True").count().next() + sqlgGraph1.traversal().V().hasLabel("Person").count().next());
             Assert.assertEquals(400, sqlgGraph1.traversal().V().hasLabel("Address_True").count().next() + sqlgGraph1.traversal().V().hasLabel("Address").count().next());
@@ -300,16 +337,16 @@ public class TestMultiThread extends BaseTest {
     /**
      * test when each graph is created in its own thread, in distributed mode
      * each thread created a different label
-     *
-     * @throws Exception
      */
     @Test
     public void testMultipleGraphsMultipleLabels() throws Exception {
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
         try {
-            configuration = new PropertiesConfiguration(sqlProperties);
+            Configurations configs = new Configurations();
+            configuration = configs.properties(sqlProperties);
             Assume.assumeTrue(isPostgres());
             configuration.addProperty("distributed", true);
+            configuration.addProperty("maxPoolSize", 3);
             if (!configuration.containsKey("jdbc.url"))
                 throw new IllegalArgumentException(String.format("SqlGraph configuration requires that the %s be set", "jdbc.url"));
 
@@ -317,8 +354,8 @@ public class TestMultiThread extends BaseTest {
             Assert.fail(e.getMessage());
         }
 
-        ExecutorService executorService = newFixedThreadPool(200);
-        int loop = 20;
+        ExecutorService executorService = Executors.newFixedThreadPool(200);
+        int loop = 200;
 //        int loop = 2;
         for (int i = 0; i < loop; i++) {
             String n = "person" + i;
@@ -335,19 +372,21 @@ public class TestMultiThread extends BaseTest {
             });
         }
         executorService.shutdown();
-        executorService.awaitTermination(10, TimeUnit.SECONDS);
+        boolean terminatedNormally = executorService.awaitTermination(1, TimeUnit.MINUTES);
+        Preconditions.checkState(terminatedNormally);
+
         try (SqlgGraph sqlgGraph2 = SqlgGraph.open(configuration)) {
             for (int i = 0; i < loop; i++) {
                 String n = "person" + i;
                 Assert.assertEquals(1, sqlgGraph2.traversal().V().hasLabel("Person" + n).count().next().longValue());
             }
         }
-        System.out.println("");
     }
 
     @Test
     public void testLoadsOfSchemaChanges() throws InterruptedException, ExecutionException {
-        ExecutorService executorService = newFixedThreadPool(10);
+        Assume.assumeFalse(isH2());
+        ExecutorService executorService = Executors.newFixedThreadPool(10);
         List<Future<Integer>> futureList = new ArrayList<>();
         int loop = 1000;
         for (int i = 0; i < loop; i++) {
@@ -370,6 +409,7 @@ public class TestMultiThread extends BaseTest {
                     }
                     this.sqlgGraph.tx().commit();
                 } catch (Exception e) {
+                    logger.error(e.getMessage(), e);
                     Assert.fail(e.getMessage());
                 }
                 return current;
@@ -379,7 +419,8 @@ public class TestMultiThread extends BaseTest {
         for (Future<Integer> future : futureList) {
             logger.info("Completed " + future.get());
         }
-        executorService.awaitTermination(1, TimeUnit.SECONDS);
+        boolean terminated = executorService.awaitTermination(1, TimeUnit.SECONDS);
+        Preconditions.checkState(terminated, "executorService terminated via timeout");
         for (int i = 0; i < loop; i++) {
             String n = "person" + i;
             Assert.assertEquals(n + " failed", 2, this.sqlgGraph.traversal().V().hasLabel(n).count().next().longValue());
@@ -396,7 +437,7 @@ public class TestMultiThread extends BaseTest {
             labels.add("label" + i);
             properties.add("property" + i);
         }
-        ExecutorService executorService = newFixedThreadPool(1);
+        ExecutorService executorService = Executors.newFixedThreadPool(1);
         List<Future<Integer>> futureList = new ArrayList<>();
 
         for (int i = 0; i < 3; i++) {

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.util.VersionUtil;
 import com.google.common.base.Preconditions;
 import org.apache.commons.collections4.set.ListOrderedSet;
 import org.apache.commons.lang3.time.StopWatch;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.structure.T;
@@ -47,46 +48,55 @@ class SqlgStartupManager {
 
     void loadSqlgSchema() {
         try {
-            if (logger.isDebugEnabled()) {
-                logger.debug("SchemaManager.loadSqlgSchema()...");
-            }
+            logger.debug("SchemaManager.loadSqlgSchema()...");
+            boolean canUserCreateSchemas = this.sqlgGraph.getSqlDialect().canUserCreateSchemas(this.sqlgGraph);
+
+            //We need Connection.TRANSACTION_SERIALIZABLE here as the SqlgGraph can startup while other graphs are
+            //creating schema objects concurrently.
+            Connection connection = this.sqlgGraph.tx().getConnection();
+            connection.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+
             //check if the topology schema exists, if not createVertexLabel it
             boolean existSqlgSchema = existSqlgSchema();
             StopWatch stopWatch = new StopWatch();
             stopWatch.start();
-            if (!existSqlgSchema) {
-                //This exist separately because Hsqldb and H2 do not support "if exist" in the schema creation sql.
+            if (canUserCreateSchemas && !existSqlgSchema) {
+                //This exists separately because Hsqldb and H2 do not support "if exist" in the schema creation sql.
                 createSqlgSchema();
             }
-            if (!existGuiSchema()) {
-                createGuiSchema();
-            }
-            if (!existSqlgSchema) {
+            if (canUserCreateSchemas && !existSqlgSchema) {
                 createSqlgSchemaTablesAndIndexes();
             }
             //The default schema is generally called 'public' and is created upfront by the db.
             //But what if its been deleted, so check.
-            if (!existDefaultSchema()) {
+            if (canUserCreateSchemas && !existDefaultSchema()) {
                 createDefaultSchema();
             }
             //committing here will ensure that sqlg creates the tables.
             this.sqlgGraph.tx().commit();
             stopWatch.stop();
-            logger.debug("Time to createVertexLabel sqlg topology: " + stopWatch.toString());
-            if (!existSqlgSchema) {
+
+            connection = this.sqlgGraph.tx().getConnection();
+            connection.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+
+            logger.debug(String.format("Time to createVertexLabel sqlg topology: %s", stopWatch));
+            if (canUserCreateSchemas && !existSqlgSchema) {
                 addPublicSchema();
                 this.sqlgGraph.tx().commit();
+
+                connection = this.sqlgGraph.tx().getConnection();
+                connection.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+
             }
-            if (!existSqlgSchema) {
+            if (canUserCreateSchemas && !existSqlgSchema) {
                 //old versions of sqlg needs the topology populated from the information_schema table.
                 logger.debug("Upgrading sqlg from pre sqlg_schema version to sqlg_schema version");
-                StopWatch stopWatch2 = new StopWatch();
-                stopWatch2.start();
+                StopWatch stopWatch2 = StopWatch.createStarted();
                 loadSqlgSchemaFromInformationSchema();
                 String version = getBuildVersion();
                 TopologyManager.addGraph(this.sqlgGraph, version);
                 stopWatch2.stop();
-                logger.debug("Time to upgrade sqlg from pre sqlg_schema: " + stopWatch2.toString());
+                logger.debug("Time to upgrade sqlg from pre sqlg_schema: " + stopWatch2);
                 logger.debug("Done upgrading sqlg from pre sqlg_schema version to sqlg_schema version");
             } else {
                 // make sure the index edge index property exist, this if for upgrading from 1.3.4 to 1.4.0
@@ -94,7 +104,34 @@ class SqlgStartupManager {
                 //make sure the sqlg_schema.graph exists.
                 String version = getBuildVersion();
                 String oldVersion = createOrUpdateGraph(version);
-                if (oldVersion == null || !oldVersion.equals(version)) {
+                int versionAsInt = Integer.parseInt(oldVersion.replace("-SNAPSHOT", "").replace(".", ""));
+                if (versionAsInt < 203) {
+                    //Need to check if there are any timestampz or timetz columns.
+                    //If so throw an exception as the user needs to alter them to drop the 'z'
+                    Set<Pair<String, String>> badColumns = new HashSet<>();
+                    Connection conn = this.sqlgGraph.tx().getConnection();
+                    Set<Schema> schemas = this.sqlgGraph.getTopology().getSchemas();
+                    for (Schema schema : schemas) {
+                        ResultSet rs = conn.getMetaData().getColumns(null, schema.getName(), null, null);
+                        while (rs.next()) {
+                            String tableName = rs.getString("TABLE_NAME");
+                            String columnName = rs.getString("COLUMN_NAME");
+                            String typeName = rs.getString("TYPE_NAME");
+                            if (this.sqlgGraph.getSqlDialect().isTimestampz(typeName)) {
+                                badColumns.add(Pair.of(tableName, columnName));
+                            }
+                        }
+                    }
+                    if (!badColumns.isEmpty()) {
+                        String message = badColumns.stream()
+                                .map(c -> String.format("'%s.%s'", c.getLeft(), c.getRight()))
+                                .reduce((a, b) -> a + ", " + b)
+                                .get();
+                        throw new IllegalStateException("Columns, " + message + ", has date time columns with time zones that needs to be dropped.");
+                    }
+                }
+
+                if (!oldVersion.equals(version)) {
                     updateTopology(oldVersion);
                 }
             }
@@ -105,7 +142,11 @@ class SqlgStartupManager {
             this.sqlgGraph.tx().commit();
         } catch (Exception e) {
             this.sqlgGraph.tx().rollback();
-            throw e;
+            if (e instanceof RuntimeException) {
+                throw (RuntimeException)e;
+            } else {
+                throw new RuntimeException(e);
+            }
         }
     }
 
@@ -122,6 +163,12 @@ class SqlgStartupManager {
         if (v.isUnknownVersion() || v.compareTo(new Version(2, 0, 0, null, null, null)) < 0) {
             addPartitionSupportToSqlgSchema();
         }
+        if (v.isUnknownVersion() || v.compareTo(new Version(2, 1, 4, null, null, null)) < 0) {
+            addHashPartitionSupportToSqlgSchema();
+        }
+        if (v.isUnknownVersion() || v.compareTo(new Version(2, 1, 5, null, null, null)) < 0) {
+            removeGlobalUniqueIndexFromSqlgSchema();
+        }
     }
 
     private void addPartitionSupportToSqlgSchema() {
@@ -134,6 +181,44 @@ class SqlgStartupManager {
                 throw new RuntimeException(e);
             }
         }
+    }
+
+    private void addHashPartitionSupportToSqlgSchema() {
+        Connection conn = this.sqlgGraph.tx().getConnection();
+        List<String> addPartitionColumns = this.sqlDialect.addHashPartitionColumns();
+        for (String addPartitionColumn : addPartitionColumns) {
+            try (Statement s = conn.createStatement()) {
+                s.execute(addPartitionColumn);
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+    private void removeGlobalUniqueIndexFromSqlgSchema() {
+        Connection conn = this.sqlgGraph.tx().getConnection();
+        try (Statement s = conn.createStatement()) {
+            String sql = String.format("delete from %s.%s where name = 'gui_schema';", this.sqlDialect.maybeWrapInQoutes("sqlg_schema"), this.sqlDialect.maybeWrapInQoutes("V_schema"));
+            if (this.sqlDialect.needsSemicolon()) {
+                sql = sql + ";";
+            }
+            s.execute(sql);
+            sql = String.format("drop table %s.%s;", this.sqlDialect.maybeWrapInQoutes("sqlg_schema"), this.sqlDialect.maybeWrapInQoutes("E_globalUniqueIndex_property"));
+            if (this.sqlDialect.needsSemicolon()) {
+                sql = sql + ";";
+            }
+            s.execute(sql);
+            sql = String.format("drop table %s.%s;", this.sqlDialect.maybeWrapInQoutes("sqlg_schema"), this.sqlDialect.maybeWrapInQoutes("V_globalUniqueIndex"));
+            if (this.sqlDialect.needsSemicolon()) {
+                sql = sql + ";";
+            }
+            s.execute(sql);
+//            s.execute("delete from \"sqlg_schema\".\"V_schema\" where name = 'gui_schema';");
+//            s.execute("drop table \"sqlg_schema\".\"E_globalUniqueIndex_property\";");
+//            s.execute("drop table \"sqlg_schema\".\"V_globalUniqueIndex\";");
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+
     }
 
     private void upgradeForeignKeysToDeferrable() {
@@ -174,7 +259,7 @@ class SqlgStartupManager {
      * @return the old version of the graph, or null if there was no graph
      */
     private String createOrUpdateGraph(String version) {
-        String oldVersion = null;
+        String oldVersion;
         Connection conn = this.sqlgGraph.tx().getConnection();
         try {
             DatabaseMetaData metadata = conn.getMetaData();
@@ -349,6 +434,8 @@ class SqlgStartupManager {
                         edgeVertex = TopologyManager.addEdgeLabel(this.sqlgGraph, table, Collections.emptyMap(), ListOrderedSet.listOrderedSet(primaryKeys), PartitionType.NONE, null);
                     }
                 }
+                Set<SchemaTable> inForeignKeys = new HashSet<>();
+                Set<SchemaTable> outForeignKeys = new HashSet<>();
                 for (Triple<String, Integer, String> edgeColumn : edgeColumns) {
                     String column = edgeColumn.getLeft();
                     if (table.startsWith(EDGE_PREFIX) && (column.endsWith(Topology.IN_VERTEX_COLUMN_END) || column.endsWith(Topology.OUT_VERTEX_COLUMN_END))) {
@@ -357,7 +444,7 @@ class SqlgStartupManager {
                         if (hasIDPrimaryKey(primaryKeys)) {
                             foreignKey = SchemaTable.of(split[0], split[1]);
                         } else {
-                            //There could be no ID pk because of user defined pk or because partioned tables have no pk.
+                            //There could be no ID pk because of user defined pk or because partitioned tables have no pk.
                             //This logic is because in TopologyManager.addLabelToEdge the '__I' or '__O' is assumed to be present and gets trimmed.
                             if (column.endsWith(Topology.IN_VERTEX_COLUMN_END)) {
                                 if (split.length == 3) {
@@ -376,11 +463,17 @@ class SqlgStartupManager {
                             }
                         }
                         if (column.endsWith(Topology.IN_VERTEX_COLUMN_END)) {
-                            TopologyManager.addLabelToEdge(this.sqlgGraph, edgeVertex, schema, table, true, foreignKey);
+                            inForeignKeys.add(foreignKey);
                         } else if (column.endsWith(Topology.OUT_VERTEX_COLUMN_END)) {
-                            TopologyManager.addLabelToEdge(this.sqlgGraph, edgeVertex, schema, table, false, foreignKey);
+                            outForeignKeys.add(foreignKey);
                         }
                     }
+                }
+                for (SchemaTable inForeignKey : inForeignKeys) {
+                    TopologyManager.addLabelToEdge(this.sqlgGraph, edgeVertex, schema, table, true, inForeignKey);
+                }
+                for (SchemaTable outForeignKey : outForeignKeys) {
+                    TopologyManager.addLabelToEdge(this.sqlgGraph, edgeVertex, schema, table, false, outForeignKey);
                 }
             }
 
@@ -434,6 +527,7 @@ class SqlgStartupManager {
             }
 
             if (this.sqlDialect.supportsPartitioning()) {
+                sqlgGraph.tx().commit();
                 //load the partitions
                 conn = this.sqlgGraph.tx().getConnection();
                 List<Map<String, String>> partitions = this.sqlDialect.getPartitions(conn);
@@ -470,9 +564,7 @@ class SqlgStartupManager {
                 lastIndexType = nonUnique ? IndexType.NON_UNIQUE : IndexType.UNIQUE;
             } else if (!lastIndexName.equals(indexName)) {
                 if (!this.sqlDialect.isSystemIndex(lastIndexName)) {
-                    if (!Schema.GLOBAL_UNIQUE_INDEX_SCHEMA.equals(schema)) {
-                        TopologyManager.addIndex(sqlgGraph, schema, label, isVertex, lastIndexName, lastIndexType, lastColumns);
-                    }
+                    TopologyManager.addIndex(sqlgGraph, schema, label, isVertex, lastIndexName, lastIndexType, lastColumns);
                 }
                 lastColumns.clear();
                 lastIndexName = indexName;
@@ -481,9 +573,7 @@ class SqlgStartupManager {
             lastColumns.add(columnName);
         }
         if (!this.sqlDialect.isSystemIndex(lastIndexName)) {
-            if (!Schema.GLOBAL_UNIQUE_INDEX_SCHEMA.equals(schema)) {
-                TopologyManager.addIndex(sqlgGraph, schema, label, isVertex, lastIndexName, lastIndexType, lastColumns);
-            }
+            TopologyManager.addIndex(sqlgGraph, schema, label, isVertex, lastIndexName, lastIndexType, lastColumns);
         }
     }
 
@@ -544,15 +634,6 @@ class SqlgStartupManager {
         );
     }
 
-    private void createGuiSchema() {
-        Connection conn = this.sqlgGraph.tx().getConnection();
-        try (Statement statement = conn.createStatement()) {
-            statement.execute(this.sqlDialect.sqlgGuiSchemaCreationScript());
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     private void createSqlgSchemaTablesAndIndexes() {
         Connection conn = this.sqlgGraph.tx().getConnection();
         try (Statement statement = conn.createStatement()) {
@@ -584,16 +665,6 @@ class SqlgStartupManager {
         try {
             DatabaseMetaData metadata = conn.getMetaData();
             return this.sqlDialect.schemaExists(metadata, this.sqlDialect.getPublicSchema());
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private boolean existGuiSchema() {
-        Connection conn = this.sqlgGraph.tx().getConnection();
-        try {
-            DatabaseMetaData metadata = conn.getMetaData();
-            return this.sqlDialect.schemaExists(metadata, Schema.GLOBAL_UNIQUE_INDEX_SCHEMA);
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }

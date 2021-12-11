@@ -13,11 +13,14 @@ import org.umlg.sqlg.structure.SchemaTable;
 import org.umlg.sqlg.structure.SqlgGraph;
 import org.umlg.sqlg.structure.TopologyChangeAction;
 import org.umlg.sqlg.structure.TopologyInf;
+import org.umlg.sqlg.util.ThreadLocalMap;
+import org.umlg.sqlg.util.ThreadLocalSet;
 
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.umlg.sqlg.structure.topology.Topology.*;
 
@@ -25,6 +28,7 @@ import static org.umlg.sqlg.structure.topology.Topology.*;
  * @author Pieter Martin (https://github.com/pietermartin)
  * Date: 2018/01/13
  */
+@SuppressWarnings("DuplicatedCode")
 public class Partition implements TopologyInf {
 
     private static final Logger logger = LoggerFactory.getLogger(Partition.class);
@@ -33,6 +37,8 @@ public class Partition implements TopologyInf {
     private String from;
     private String to;
     private String in;
+    private Integer modulus;
+    private Integer remainder;
     private AbstractLabel abstractLabel;
     private boolean committed = true;
 
@@ -40,9 +46,9 @@ public class Partition implements TopologyInf {
     private final String partitionExpression;
 
     private Partition parentPartition;
-    private final Map<String, Partition> partitions = new HashMap<>();
-    private final Map<String, Partition> uncommittedPartitions = new HashMap<>();
-    private final Set<String> uncommittedRemovedPartitions = new HashSet<>();
+    private final Map<String, Partition> partitions = new ConcurrentHashMap<>();
+    private final Map<String, Partition> uncommittedPartitions = new ThreadLocalMap<>();
+    private final Set<String> uncommittedRemovedPartitions = new ThreadLocalSet<>();
 
     public Partition(
             SqlgGraph sqlgGraph,
@@ -74,6 +80,24 @@ public class Partition implements TopologyInf {
         this.abstractLabel = abstractLabel;
         this.name = name;
         this.in = in;
+        this.partitionType = partitionType;
+        this.partitionExpression = partitionExpression;
+    }
+
+    public Partition(
+            SqlgGraph sqlgGraph,
+            AbstractLabel abstractLabel,
+            String name,
+            Integer modulus,
+            Integer remainder,
+            PartitionType partitionType,
+            String partitionExpression) {
+
+        this.sqlgGraph = sqlgGraph;
+        this.abstractLabel = abstractLabel;
+        this.name = name;
+        this.modulus = modulus;
+        this.remainder = remainder;
         this.partitionType = partitionType;
         this.partitionExpression = partitionExpression;
     }
@@ -107,6 +131,24 @@ public class Partition implements TopologyInf {
         this.sqlgGraph = sqlgGraph;
         this.name = name;
         this.in = in;
+        this.parentPartition = parentPartition;
+        this.partitionType = partitionType;
+        this.partitionExpression = partitionExpression;
+    }
+
+    private Partition(
+            SqlgGraph sqlgGraph,
+            Partition parentPartition,
+            String name,
+            Integer modulus,
+            Integer remainder,
+            PartitionType partitionType,
+            String partitionExpression) {
+
+        this.sqlgGraph = sqlgGraph;
+        this.name = name;
+        this.modulus = modulus;
+        this.remainder = remainder;
         this.parentPartition = parentPartition;
         this.partitionType = partitionType;
         this.partitionExpression = partitionExpression;
@@ -122,6 +164,14 @@ public class Partition implements TopologyInf {
 
     public String getIn() {
         return in;
+    }
+
+    public Integer getModulus() {
+        return modulus;
+    }
+
+    public Integer getRemainder() {
+        return remainder;
     }
 
     public PartitionType getPartitionType() {
@@ -177,19 +227,19 @@ public class Partition implements TopologyInf {
             } else {
                 partition.detach();
             }
-            this.getAbstractLabel().getSchema().getTopology().fire(partition, "", TopologyChangeAction.DELETE);
+            this.getAbstractLabel().getSchema().getTopology().fire(partition, partition, TopologyChangeAction.DELETE);
         }
     }
 
     /**
      * Create a range partition on an {@link AbstractLabel}
      *
-     * @param sqlgGraph
-     * @param abstractLabel
-     * @param name
-     * @param from
-     * @param to
-     * @return
+     * @param sqlgGraph     The graph
+     * @param abstractLabel The abstractLabel to partition
+     * @param name          The name of the partition
+     * @param from          The range partition 'from' clause.
+     * @param to            The range partition 'to' clause.
+     * @return The newly created partition
      */
     static Partition createRangePartition(SqlgGraph sqlgGraph, AbstractLabel abstractLabel, String name, String from, String to) {
         Preconditions.checkArgument(!abstractLabel.getSchema().isSqlgSchema(), "createRangePartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
@@ -213,16 +263,48 @@ public class Partition implements TopologyInf {
     }
 
     /**
+     * Create a hash partition on an {@link AbstractLabel}
+     *
+     * @param sqlgGraph     The graph
+     * @param abstractLabel The abstractLabel to partition
+     * @param name          The name of the partition
+     * @param modulus       The hash modulus
+     * @param remainder     The hash remainder
+     * @return The newly created partition
+     */
+    static Partition createHashPartition(SqlgGraph sqlgGraph, AbstractLabel abstractLabel, String name, int modulus, int remainder) {
+        Preconditions.checkArgument(!abstractLabel.getSchema().isSqlgSchema(), "createHashPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
+        Partition partition = new Partition(sqlgGraph, abstractLabel, name, modulus, remainder, PartitionType.NONE, null);
+        partition.createHashPartitionOnDb();
+        if (abstractLabel instanceof VertexLabel) {
+            TopologyManager.addVertexLabelPartition(
+                    sqlgGraph,
+                    abstractLabel.getSchema().getName(),
+                    abstractLabel.getName(),
+                    name,
+                    modulus,
+                    remainder,
+                    PartitionType.NONE,
+                    null);
+        } else {
+            TopologyManager.addEdgeLabelPartition(sqlgGraph, abstractLabel, name, modulus, remainder, PartitionType.NONE, null);
+        }
+        partition.committed = false;
+        return partition;
+    }
+
+    /**
      * Create a list partition on an {@link AbstractLabel}
      *
-     * @param sqlgGraph
-     * @param abstractLabel
-     * @param name
-     * @param in
-     * @return
+     * @param sqlgGraph     The graph
+     * @param abstractLabel The abstractLabel to partition
+     * @param name          The name of the partition
+     * @param in            The list partition's 'in' clause
+     * @return The newly created partition
      */
     static Partition createListPartition(SqlgGraph sqlgGraph, AbstractLabel abstractLabel, String name, String in) {
         Preconditions.checkArgument(!abstractLabel.getSchema().isSqlgSchema(), "createListPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
+        Preconditions.checkState(abstractLabel.isListPartition());
         Partition partition = new Partition(sqlgGraph, abstractLabel, name, in, PartitionType.NONE, null);
         partition.createListPartitionOnDb();
         if (abstractLabel instanceof VertexLabel) {
@@ -244,14 +326,14 @@ public class Partition implements TopologyInf {
     /**
      * Create a range partition on an {@link AbstractLabel} that will itself be sub-partitioned
      *
-     * @param sqlgGraph
-     * @param abstractLabel
-     * @param name
-     * @param from
-     * @param to
-     * @param partitionType
-     * @param partitionExpression
-     * @return
+     * @param sqlgGraph           The graph
+     * @param abstractLabel       The abstractLabel to partition
+     * @param name                The name of the partition
+     * @param from                The range partition 'from' clause.
+     * @param to                  The range partition 'to' clause.
+     * @param subPartitionType    The type of the sub partition, LIST, RANGE or HASH
+     * @param partitionExpression The partition expression as passed directly into the sql
+     * @return The newly created partition
      */
     static Partition createRangePartitionWithSubPartition(
             SqlgGraph sqlgGraph,
@@ -259,12 +341,12 @@ public class Partition implements TopologyInf {
             String name,
             String from,
             String to,
-            PartitionType partitionType,
+            PartitionType subPartitionType,
             String partitionExpression) {
 
         Preconditions.checkArgument(!abstractLabel.getSchema().isSqlgSchema(), "createRangePartitionWithSubPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
         Preconditions.checkState(abstractLabel.isRangePartition());
-        Partition partition = new Partition(sqlgGraph, abstractLabel, name, from, to, partitionType, partitionExpression);
+        Partition partition = new Partition(sqlgGraph, abstractLabel, name, from, to, subPartitionType, partitionExpression);
         partition.createRangePartitionOnDb();
         if (abstractLabel instanceof VertexLabel) {
             TopologyManager.addVertexLabelPartition(
@@ -274,10 +356,10 @@ public class Partition implements TopologyInf {
                     name,
                     from,
                     to,
-                    partitionType,
+                    subPartitionType,
                     partitionExpression);
         } else {
-            TopologyManager.addEdgeLabelPartition(sqlgGraph, abstractLabel, name, from, to, partitionType, partitionExpression);
+            TopologyManager.addEdgeLabelPartition(sqlgGraph, abstractLabel, name, from, to, subPartitionType, partitionExpression);
         }
         partition.committed = false;
         return partition;
@@ -286,24 +368,25 @@ public class Partition implements TopologyInf {
     /**
      * Create a list partition that will itself be sub-partitioned.
      *
-     * @param sqlgGraph
-     * @param abstractLabel
-     * @param name
-     * @param in
-     * @param partitionType
-     * @param partitionExpression
-     * @return
+     * @param sqlgGraph           The graph
+     * @param abstractLabel       The abstractLabel to partition
+     * @param name                The name of the partition
+     * @param in                  The list partition's 'in' clause
+     * @param subPartitionType    The type of the sub partition, LIST, RANGE or HASH
+     * @param partitionExpression The partition expression as passed directly into the sql
+     * @return The newly created partition
      */
     static Partition createListPartitionWithSubPartition(
             SqlgGraph sqlgGraph,
             AbstractLabel abstractLabel,
             String name,
             String in,
-            PartitionType partitionType,
+            PartitionType subPartitionType,
             String partitionExpression) {
 
         Preconditions.checkArgument(!abstractLabel.getSchema().isSqlgSchema(), "createListSubPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
-        Partition partition = new Partition(sqlgGraph, abstractLabel, name, in, partitionType, partitionExpression);
+        Preconditions.checkState(abstractLabel.isListPartition());
+        Partition partition = new Partition(sqlgGraph, abstractLabel, name, in, subPartitionType, partitionExpression);
         partition.createListPartitionOnDb();
         if (abstractLabel instanceof VertexLabel) {
             TopologyManager.addVertexLabelPartition(
@@ -312,10 +395,52 @@ public class Partition implements TopologyInf {
                     abstractLabel.getName(),
                     name,
                     in,
-                    partitionType,
+                    subPartitionType,
                     partitionExpression);
         } else {
-            TopologyManager.addEdgeLabelPartition(sqlgGraph, abstractLabel, name, in, partitionType, partitionExpression);
+            TopologyManager.addEdgeLabelPartition(sqlgGraph, abstractLabel, name, in, subPartitionType, partitionExpression);
+        }
+        partition.committed = false;
+        return partition;
+    }
+
+    /**
+     * Create a hash partition that will itself be sub-partitioned.
+     *
+     * @param sqlgGraph           The graph
+     * @param abstractLabel       The abstractLabel to partition
+     * @param name                The name of the partition
+     * @param modulus             The hash partition's 'modulus' clause
+     * @param remainder           The hash partition's 'remainder' clause
+     * @param subPartitionType    The type of the sub partition, LIST, RANGE or HASH
+     * @param partitionExpression The partition expression as passed directly into the sql
+     * @return The newly created partition
+     */
+    static Partition createHashPartitionWithSubPartition(
+            SqlgGraph sqlgGraph,
+            AbstractLabel abstractLabel,
+            String name,
+            Integer modulus,
+            Integer remainder,
+            PartitionType subPartitionType,
+            String partitionExpression) {
+
+        Preconditions.checkArgument(!abstractLabel.getSchema().isSqlgSchema(), "createListSubPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
+        Preconditions.checkState(abstractLabel.isHashPartition());
+        Partition partition = new Partition(sqlgGraph, abstractLabel, name, modulus, remainder, subPartitionType, partitionExpression);
+        partition.createHashPartitionOnDb();
+        if (abstractLabel instanceof VertexLabel) {
+            TopologyManager.addVertexLabelPartition(
+                    sqlgGraph,
+                    abstractLabel.getSchema().getName(),
+                    abstractLabel.getName(),
+                    name,
+                    modulus,
+                    remainder,
+                    subPartitionType,
+                    partitionExpression);
+        } else {
+            TopologyManager.addEdgeLabelPartition(sqlgGraph, abstractLabel, name, modulus, remainder, subPartitionType, partitionExpression);
         }
         partition.committed = false;
         return partition;
@@ -323,13 +448,6 @@ public class Partition implements TopologyInf {
 
     /**
      * Create a range partition on an existing {@link Partition}
-     *
-     * @param sqlgGraph
-     * @param parentPartition
-     * @param name
-     * @param from
-     * @param to
-     * @return
      */
     private static Partition createRangeSubPartition(SqlgGraph sqlgGraph, Partition parentPartition, String name, String from, String to) {
         Preconditions.checkArgument(!parentPartition.getAbstractLabel().getSchema().isSqlgSchema(), "createRangeSubPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
@@ -342,13 +460,6 @@ public class Partition implements TopologyInf {
 
     /**
      * Create a range partition on an existing {@link Partition}
-     *
-     * @param sqlgGraph
-     * @param parentPartition
-     * @param name
-     * @param from
-     * @param to
-     * @return
      */
     private static Partition createRangeSubPartitionWithPartition(
             SqlgGraph sqlgGraph,
@@ -375,7 +486,7 @@ public class Partition implements TopologyInf {
             PartitionType partitionType,
             String partitionExpression) {
 
-        Preconditions.checkArgument(!parentPartition.getAbstractLabel().getSchema().isSqlgSchema(), "createRangeSubPartitionWithPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
+        Preconditions.checkArgument(!parentPartition.getAbstractLabel().getSchema().isSqlgSchema(), "createListSubPartitionWithPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
         Partition partition = new Partition(sqlgGraph, parentPartition, name, in, partitionType, partitionExpression);
         partition.createListPartitionOnDb();
         TopologyManager.addSubPartition(sqlgGraph, partition);
@@ -385,12 +496,6 @@ public class Partition implements TopologyInf {
 
     /**
      * Create a list partition on an existing {@link Partition}
-     *
-     * @param sqlgGraph
-     * @param parentPartition
-     * @param name
-     * @param in
-     * @return
      */
     private static Partition createListSubPartition(SqlgGraph sqlgGraph, Partition parentPartition, String name, String in) {
         Preconditions.checkArgument(!parentPartition.getAbstractLabel().getSchema().isSqlgSchema(), "createPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
@@ -401,6 +506,14 @@ public class Partition implements TopologyInf {
         return partition;
     }
 
+    private static Partition createHashSubPartition(SqlgGraph sqlgGraph, Partition parentPartition, String name, Integer modulus, Integer remainder) {
+        Preconditions.checkArgument(!parentPartition.getAbstractLabel().getSchema().isSqlgSchema(), "createPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
+        Partition partition = new Partition(sqlgGraph, parentPartition, name, modulus, remainder, PartitionType.NONE, null);
+        partition.createHashPartitionOnDb();
+        TopologyManager.addSubPartition(sqlgGraph, partition);
+        partition.committed = false;
+        return partition;
+    }
 
     private void createRangePartitionOnDb() {
         StringBuilder sql = new StringBuilder();
@@ -491,7 +604,7 @@ public class Partition implements TopologyInf {
             if (inEdgeRole.getVertexLabel().hasIDPrimaryKey()) {
                 sql.append(sqlDialect.maybeWrapInQoutes(inEdgeRole.getVertexLabel().getSchema().getName() + "." + inEdgeRole.getVertexLabel().getLabel() + Topology.IN_VERTEX_COLUMN_END));
             } else {
-               int i = 1;
+                int i = 1;
                 for (String identifier : inEdgeRole.getVertexLabel().getIdentifiers()) {
                     sql.append(sqlDialect.maybeWrapInQoutes(inEdgeRole.getVertexLabel().getSchema().getName() + "." + inEdgeRole.getVertexLabel().getLabel() + "." + identifier + Topology.IN_VERTEX_COLUMN_END));
                     if (i++ < inEdgeRole.getVertexLabel().getIdentifiers().size()) {
@@ -584,6 +697,79 @@ public class Partition implements TopologyInf {
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
+        if (this.partitionType.isNone()) {
+            for (Index index : getAbstractLabel().getIndexes().values()) {
+                //Append the partition name to the index name.
+                String indexName = index.getName() + "_" + this.getName();
+                if (indexName.length() > this.sqlgGraph.getSqlDialect().getMaximumIndexNameLength()) {
+                    indexName = Index.generateName(this.sqlgGraph.getSqlDialect());
+                }
+                index.createIndex(this.sqlgGraph, SchemaTable.of(getAbstractLabel().getSchema().getName(), this.getName()), indexName);
+            }
+        }
+    }
+
+    private void createHashPartitionOnDb() {
+        StringBuilder sql = new StringBuilder();
+        sql.append("CREATE TABLE ");
+        sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes(this.getAbstractLabel().getSchema().getName()));
+        sql.append(".");
+        sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes(this.name));
+        sql.append(" PARTITION OF ");
+        if (this.parentPartition == null) {
+            Preconditions.checkState(this.abstractLabel != null, "If Partition.parentPartition is null it must have an abstractLabel.");
+            sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes(this.abstractLabel.getSchema().getName()));
+            sql.append(".");
+            sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes(this.abstractLabel.getPrefix() + this.abstractLabel.getLabel()));
+        } else {
+            sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes(this.parentPartition.getAbstractLabel().getSchema().getName()));
+            sql.append(".");
+            sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes(this.parentPartition.name));
+        }
+        sql.append(" FOR VALUES WITH (MODULUS ");
+        sql.append(this.modulus);
+        sql.append(", REMAINDER ");
+        sql.append(this.remainder);
+        sql.append(")");
+        if (!this.partitionType.isNone()) {
+            sql.append("\nPARTITION BY ");
+            sql.append(this.partitionType.name());
+            sql.append("(");
+            sql.append(this.partitionExpression);
+            sql.append(")");
+        }
+        if (this.sqlgGraph.getSqlDialect().needsSemicolon()) {
+            sql.append(";");
+        }
+        //Only leaf partitions can have indexes.
+        if (this.partitionType.isNone()) {
+            AbstractLabel abstractLabel = getAbstractLabel();
+            if (abstractLabel instanceof EdgeLabel) {
+                sql.append(foreignKeyIndexSql());
+            }
+        }
+        if (this.sqlgGraph.getSqlDialect().needsSemicolon()) {
+            sql.append(";");
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug(sql.toString());
+        }
+        Connection conn = this.sqlgGraph.tx().getConnection();
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute(sql.toString());
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        if (this.partitionType.isNone()) {
+            for (Index index : getAbstractLabel().getIndexes().values()) {
+                //Append the partition name to the index name.
+                String indexName = index.getName() + "_" + this.getName();
+                if (indexName.length() > this.sqlgGraph.getSqlDialect().getMaximumIndexNameLength()) {
+                    indexName = Index.generateName(this.sqlgGraph.getSqlDialect());
+                }
+                index.createIndex(this.sqlgGraph, SchemaTable.of(getAbstractLabel().getSchema().getName(), this.getName()), indexName);
+            }
+        }
     }
 
     void delete() {
@@ -629,7 +815,7 @@ public class Partition implements TopologyInf {
     }
 
     void afterCommit() {
-        Preconditions.checkState(this.getAbstractLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread(), "Partition.afterCommit must hold the write lock");
+        Preconditions.checkState(this.getAbstractLabel().getSchema().getTopology().isSchemaChanged(), "Partition.afterCommit must have schemaChanged = true");
         for (Iterator<Map.Entry<String, Partition>> it = this.uncommittedPartitions.entrySet().iterator(); it.hasNext(); ) {
             Map.Entry<String, Partition> entry = it.next();
             this.partitions.put(entry.getKey(), entry.getValue());
@@ -641,22 +827,20 @@ public class Partition implements TopologyInf {
             this.partitions.remove(prop);
             it.remove();
         }
-        for (Iterator<Map.Entry<String, Partition>> it = this.partitions.entrySet().iterator(); it.hasNext(); ) {
-            Map.Entry<String, Partition> entry = it.next();
+        for (Map.Entry<String, Partition> entry : this.partitions.entrySet()) {
             entry.getValue().afterCommit();
         }
     }
 
     void afterRollback() {
-        Preconditions.checkState(this.getAbstractLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread(), "Partition.afterCommit must hold the write lock");
+        Preconditions.checkState(this.getAbstractLabel().getSchema().getTopology().isSchemaChanged(), "Partition.afterRollback must have schemaChanged = true");
         this.uncommittedRemovedPartitions.clear();
-        for (Iterator<Map.Entry<String, Partition>> it = this.partitions.entrySet().iterator(); it.hasNext(); ) {
-            Map.Entry<String, Partition> entry = it.next();
+        for (Map.Entry<String, Partition> entry : this.partitions.entrySet()) {
             entry.getValue().afterRollback();
         }
     }
 
-    public Optional<ObjectNode> toUncommitedPartitionNotifyJson() {
+    public Optional<ObjectNode> toUncommittedPartitionNotifyJson() {
         return toNotifyJson(false);
     }
 
@@ -671,6 +855,8 @@ public class Partition implements TopologyInf {
         partitionObjectNode.put("from", this.from);
         partitionObjectNode.put("to", this.to);
         partitionObjectNode.put("in", this.in);
+        partitionObjectNode.put("modulus", this.modulus);
+        partitionObjectNode.put("remainder", this.remainder);
         partitionObjectNode.put("partitionType", this.partitionType.name());
         partitionObjectNode.put("partitionExpression", this.partitionExpression);
         ArrayNode uncommittedPartitions = new ArrayNode(Topology.OBJECT_MAPPER.getNodeFactory());
@@ -710,6 +896,44 @@ public class Partition implements TopologyInf {
         }
     }
 
+    public Optional<ObjectNode> toJson() {
+        ObjectNode partitionObjectNode = new ObjectNode(Topology.OBJECT_MAPPER.getNodeFactory());
+        partitionObjectNode.put("name", this.name);
+        partitionObjectNode.put("from", this.from);
+        partitionObjectNode.put("to", this.to);
+        partitionObjectNode.put("in", this.in);
+        partitionObjectNode.put("modulus", this.modulus);
+        partitionObjectNode.put("remainder", this.remainder);
+        partitionObjectNode.put("partitionType", this.partitionType.name());
+        partitionObjectNode.put("partitionExpression", this.partitionExpression);
+        ArrayNode uncommittedPartitions = new ArrayNode(Topology.OBJECT_MAPPER.getNodeFactory());
+        for (Partition partition : this.uncommittedPartitions.values()) {
+            Optional<ObjectNode> json = partition.toJson();
+            json.ifPresent(uncommittedPartitions::add);
+        }
+        if (uncommittedPartitions.size() > 0) {
+            partitionObjectNode.set("uncommittedPartitions", uncommittedPartitions);
+        }
+        ArrayNode committedPartitions = new ArrayNode(Topology.OBJECT_MAPPER.getNodeFactory());
+        for (Partition partition : this.partitions.values()) {
+            if (!this.uncommittedRemovedPartitions.contains(partition.getName())) {
+                Optional<ObjectNode> json = partition.toJson();
+                json.ifPresent(committedPartitions::add);
+            }
+        }
+        if (committedPartitions.size() > 0) {
+            partitionObjectNode.set("partitions", committedPartitions);
+        }
+        ArrayNode uncommittedRemovedPartitions = new ArrayNode(Topology.OBJECT_MAPPER.getNodeFactory());
+        for (String removedPartition : this.uncommittedRemovedPartitions) {
+            uncommittedRemovedPartitions.add(removedPartition);
+        }
+        if (uncommittedRemovedPartitions.size() > 0) {
+            partitionObjectNode.set("uncommittedRemovedPartitions", uncommittedRemovedPartitions);
+        }
+        return Optional.of(partitionObjectNode);
+    }
+
     static Partition fromUncommittedPartitionNotifyJson(AbstractLabel abstractLabel, JsonNode partitionNode) {
         Partition p;
         if (!partitionNode.get("from").asText().equals("null")) {
@@ -724,7 +948,7 @@ public class Partition implements TopologyInf {
                     PartitionType.from(partitionNode.get("partitionType").asText()),
                     partitionNode.get("partitionExpression").asText().equals("null") ? null : partitionNode.get("partitionExpression").asText()
             );
-        } else {
+        } else if (!partitionNode.get("in").asText().equals("null")) {
             Preconditions.checkState(partitionNode.get("from").asText().equals("null"));
             Preconditions.checkState(partitionNode.get("to").asText().equals("null"));
             Preconditions.checkState(!partitionNode.get("in").asText().equals("null"));
@@ -736,6 +960,21 @@ public class Partition implements TopologyInf {
                     PartitionType.from(partitionNode.get("partitionType").asText()),
                     partitionNode.get("partitionExpression").asText().equals("null") ? null : partitionNode.get("partitionExpression").asText()
             );
+        } else {
+            Preconditions.checkState(!partitionNode.get("modulus").asText().equals("null"));
+            Preconditions.checkState(partitionNode.get("from").asText().equals("null"));
+            Preconditions.checkState(partitionNode.get("to").asText().equals("null"));
+            Preconditions.checkState(partitionNode.get("in").asText().equals("null"));
+            p = new Partition(
+                    abstractLabel.getSchema().getSqlgGraph(),
+                    abstractLabel,
+                    partitionNode.get("name").asText(),
+                    partitionNode.get("modulus").asInt(),
+                    partitionNode.get("remainder").asInt(),
+                    PartitionType.from(partitionNode.get("partitionType").asText()),
+                    partitionNode.get("partitionExpression").asText().equals("null") ? null : partitionNode.get("partitionExpression").asText()
+            );
+
         }
         ArrayNode uncommittedPartitions = (ArrayNode) partitionNode.get("uncommittedPartitions");
         if (uncommittedPartitions != null) {
@@ -764,15 +1003,27 @@ public class Partition implements TopologyInf {
                     PartitionType.from(partitionNode.get("partitionType").asText()),
                     partitionNode.get("partitionExpression").asText().equals("null") ? null : partitionNode.get("partitionExpression").asText()
             );
-        } else {
+        } else if (!partitionNode.get("in").asText().equals("null")) {
             Preconditions.checkState(partitionNode.get("from").asText().equals("null"));
             Preconditions.checkState(partitionNode.get("to").asText().equals("null"));
-            Preconditions.checkState(!partitionNode.get("in").asText().equals("null"));
             p = new Partition(
                     this.sqlgGraph,
                     this,
                     partitionNode.get("name").asText(),
                     partitionNode.get("in").asText(),
+                    PartitionType.from(partitionNode.get("partitionType").asText()),
+                    partitionNode.get("partitionExpression").asText().equals("null") ? null : partitionNode.get("partitionExpression").asText()
+            );
+        } else {
+            Preconditions.checkState(partitionNode.get("from").asText().equals("null"));
+            Preconditions.checkState(partitionNode.get("to").asText().equals("null"));
+            Preconditions.checkState(partitionNode.get("in").asText().equals("null"));
+            p = new Partition(
+                    this.sqlgGraph,
+                    this,
+                    partitionNode.get("name").asText(),
+                    partitionNode.get("modulus").asInt(),
+                    partitionNode.get("remainder").asInt(),
                     PartitionType.from(partitionNode.get("partitionType").asText()),
                     partitionNode.get("partitionExpression").asText().equals("null") ? null : partitionNode.get("partitionExpression").asText()
             );
@@ -822,7 +1073,7 @@ public class Partition implements TopologyInf {
                 String pName = jsonNode.asText();
                 Partition old = this.partitions.remove(pName);
                 if (fire && old != null) {
-                    this.getAbstractLabel().getSchema().getTopology().fire(old, "", TopologyChangeAction.DELETE);
+                    this.getAbstractLabel().getSchema().getTopology().fire(old, old, TopologyChangeAction.DELETE);
                 }
             }
         }
@@ -840,26 +1091,35 @@ public class Partition implements TopologyInf {
         Objects.requireNonNull(to, "Sub-partition's \"to\" must not be null");
         Preconditions.checkState(this.partitionType == PartitionType.RANGE, "ensureRangePartitionExists(String name, String from, String to) can only be called for a RANGE partitioned VertexLabel. Found %s", this.partitionType.name());
         Optional<Partition> partitionOptional = this.getPartition(name);
-        if (!partitionOptional.isPresent()) {
+        if (partitionOptional.isEmpty()) {
             this.getAbstractLabel().getSchema().getTopology().lock();
             partitionOptional = this.getPartition(name);
             partitionOptional.orElseGet(() -> this.createRangePartition(name, from, to));
-        } else {
-            partitionOptional.get();
         }
     }
 
     public void ensureListPartitionExists(String name, String in) {
         Objects.requireNonNull(name, "Sub-partition's \"name\" must not be null");
         Objects.requireNonNull(in, "Sub-partition's \"in\" must not be null");
-        Preconditions.checkState(this.partitionType == PartitionType.LIST, "ensureRangePartitionExists(String name, String in) can only be called for a LIST partitioned VertexLabel. Found %s", this.partitionType.name());
+        Preconditions.checkState(this.partitionType == PartitionType.LIST, "ensureListPartitionExists(String name, String in) can only be called for a LIST partitioned VertexLabel. Found %s", this.partitionType.name());
         Optional<Partition> partitionOptional = this.getPartition(name);
-        if (!partitionOptional.isPresent()) {
+        if (partitionOptional.isEmpty()) {
             this.getAbstractLabel().getSchema().getTopology().lock();
             partitionOptional = this.getPartition(name);
             partitionOptional.orElseGet(() -> this.createListPartition(name, in));
-        } else {
-            partitionOptional.get();
+        }
+    }
+
+    public void ensureHashPartitionExists(String name, Integer modulus, Integer remainder) {
+        Objects.requireNonNull(name, "Sub-partition's \"name\" must not be null");
+        Preconditions.checkState(modulus > 0, "hash partition's modulus must be > 0.");
+        Preconditions.checkState(remainder >= 0, "hash partition's modulus must be > 0.");
+        Preconditions.checkState(this.partitionType == PartitionType.HASH, "ensureHashPartitionExists(String name, String in) can only be called for a HASH partitioned VertexLabel. Found %s", this.partitionType.name());
+        Optional<Partition> partitionOptional = this.getPartition(name);
+        if (partitionOptional.isEmpty()) {
+            this.getAbstractLabel().getSchema().getTopology().lock();
+            partitionOptional = this.getPartition(name);
+            partitionOptional.orElseGet(() -> this.createHashPartition(name, modulus, remainder));
         }
     }
 
@@ -877,7 +1137,7 @@ public class Partition implements TopologyInf {
         Objects.requireNonNull(partitionExpression, "Sub-partition's \"partitionExpression\" must not be null");
 
         Optional<Partition> partitionOptional = this.getPartition(name);
-        if (!partitionOptional.isPresent()) {
+        if (partitionOptional.isEmpty()) {
             this.getAbstractLabel().getSchema().getTopology().lock();
             partitionOptional = this.getPartition(name);
             return partitionOptional.orElseGet(() -> this.createRangePartitionWithSubPartition(name, from, to, partitionType, partitionExpression));
@@ -898,7 +1158,7 @@ public class Partition implements TopologyInf {
         Objects.requireNonNull(partitionExpression, "Sub-partition's \"partitionExpression\" must not be null");
 
         Optional<Partition> partitionOptional = this.getPartition(name);
-        if (!partitionOptional.isPresent()) {
+        if (partitionOptional.isEmpty()) {
             this.getAbstractLabel().getSchema().getTopology().lock();
             partitionOptional = this.getPartition(name);
             return partitionOptional.orElseGet(() -> this.createListPartitionWithSubPartition(name, in, partitionType, partitionExpression));
@@ -912,7 +1172,7 @@ public class Partition implements TopologyInf {
         this.uncommittedPartitions.remove(name);
         Partition partition = Partition.createRangeSubPartition(this.sqlgGraph, this, name, from, to);
         this.uncommittedPartitions.put(name, partition);
-        this.getAbstractLabel().getSchema().getTopology().fire(partition, "", TopologyChangeAction.CREATE);
+        this.getAbstractLabel().getSchema().getTopology().fire(partition, null, TopologyChangeAction.CREATE);
         return partition;
     }
 
@@ -921,7 +1181,16 @@ public class Partition implements TopologyInf {
         this.uncommittedPartitions.remove(name);
         Partition partition = Partition.createListSubPartition(this.sqlgGraph, this, name, in);
         this.uncommittedPartitions.put(name, partition);
-        this.getAbstractLabel().getSchema().getTopology().fire(partition, "", TopologyChangeAction.CREATE);
+        this.getAbstractLabel().getSchema().getTopology().fire(partition, null, TopologyChangeAction.CREATE);
+        return partition;
+    }
+
+    private Partition createHashPartition(String name, Integer modulus, Integer remainder) {
+        Preconditions.checkState(!this.getAbstractLabel().getSchema().isSqlgSchema(), "createSubPartition may not be called for \"%s\"", Topology.SQLG_SCHEMA);
+        this.uncommittedPartitions.remove(name);
+        Partition partition = Partition.createHashSubPartition(this.sqlgGraph, this, name, modulus, remainder);
+        this.uncommittedPartitions.put(name, partition);
+        this.getAbstractLabel().getSchema().getTopology().fire(partition, null, TopologyChangeAction.CREATE);
         return partition;
     }
 
@@ -943,7 +1212,7 @@ public class Partition implements TopologyInf {
                 partitionType,
                 partitionExpression);
         this.uncommittedPartitions.put(name, partition);
-        this.getAbstractLabel().getSchema().getTopology().fire(partition, "", TopologyChangeAction.CREATE);
+        this.getAbstractLabel().getSchema().getTopology().fire(partition, null, TopologyChangeAction.CREATE);
         return partition;
     }
 
@@ -963,13 +1232,13 @@ public class Partition implements TopologyInf {
                 partitionType,
                 partitionExpression);
         this.uncommittedPartitions.put(name, partition);
-        this.getAbstractLabel().getSchema().getTopology().fire(partition, "", TopologyChangeAction.CREATE);
+        this.getAbstractLabel().getSchema().getTopology().fire(partition, null, TopologyChangeAction.CREATE);
         return partition;
     }
 
     public Map<String, Partition> getPartitions() {
         Map<String, Partition> result = new HashMap<>(this.partitions);
-        if (this.getAbstractLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread()) {
+        if (this.getAbstractLabel().getSchema().getTopology().isSchemaChanged()) {
             result.putAll(this.uncommittedPartitions);
             for (String s : this.uncommittedRemovedPartitions) {
                 result.remove(s);
@@ -979,11 +1248,11 @@ public class Partition implements TopologyInf {
     }
 
     public Optional<Partition> getPartition(String name) {
-        if (getAbstractLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread() && this.uncommittedRemovedPartitions.contains(name)) {
+        if (getAbstractLabel().getSchema().getTopology().isSchemaChanged() && this.uncommittedRemovedPartitions.contains(name)) {
             return Optional.empty();
         }
         Partition result = null;
-        if (this.getAbstractLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread()) {
+        if (this.getAbstractLabel().getSchema().getTopology().isSchemaChanged()) {
             result = this.uncommittedPartitions.get(name);
         }
         if (result == null) {
@@ -1007,10 +1276,12 @@ public class Partition implements TopologyInf {
     }
 
     Partition addPartition(Vertex partitionVertex) {
-        Preconditions.checkState(this.getAbstractLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread());
+        Preconditions.checkState(this.getAbstractLabel().getSchema().getTopology().isSchemaChanged());
         VertexProperty<String> from = partitionVertex.property(SQLG_SCHEMA_PARTITION_FROM);
         VertexProperty<String> to = partitionVertex.property(SQLG_SCHEMA_PARTITION_TO);
         VertexProperty<String> in = partitionVertex.property(SQLG_SCHEMA_PARTITION_IN);
+        VertexProperty<Integer> modulus = partitionVertex.property(SQLG_SCHEMA_PARTITION_MODULUS);
+        VertexProperty<Integer> remainder = partitionVertex.property(SQLG_SCHEMA_PARTITION_REMAINDER);
         VertexProperty<String> partitionType = partitionVertex.property(SQLG_SCHEMA_PARTITION_PARTITION_TYPE);
         VertexProperty<String> partitionExpression = partitionVertex.property(SQLG_SCHEMA_PARTITION_PARTITION_EXPRESSION);
         Partition partition;
@@ -1041,8 +1312,7 @@ public class Partition implements TopologyInf {
                         null);
 
             }
-        } else {
-            Preconditions.checkState(in.isPresent());
+        } else if (in.isPresent()) {
             Preconditions.checkState(!to.isPresent());
             Preconditions.checkState(!from.isPresent());
             if (partitionExpression.isPresent()) {
@@ -1063,6 +1333,32 @@ public class Partition implements TopologyInf {
                         this,
                         partitionVertex.value(SQLG_SCHEMA_PARTITION_NAME),
                         in.value(),
+                        partitionType1,
+                        null);
+            }
+        } else {
+            Preconditions.checkState(modulus.isPresent());
+            Preconditions.checkState(remainder.isPresent());
+            if (partitionExpression.isPresent()) {
+                PartitionType partitionType1 = PartitionType.from(partitionType.value());
+                Preconditions.checkState(!partitionType1.isNone());
+                partition = new Partition(
+                        this.sqlgGraph,
+                        this,
+                        partitionVertex.value(SQLG_SCHEMA_PARTITION_NAME),
+                        modulus.value(),
+                        remainder.value(),
+                        partitionType1,
+                        partitionExpression.value());
+            } else {
+                PartitionType partitionType1 = PartitionType.from(partitionType.value());
+                Preconditions.checkState(partitionType1.isNone());
+                partition = new Partition(
+                        this.sqlgGraph,
+                        this,
+                        partitionVertex.value(SQLG_SCHEMA_PARTITION_NAME),
+                        modulus.value(),
+                        remainder.value(),
                         partitionType1,
                         null);
             }

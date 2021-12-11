@@ -4,14 +4,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.base.Preconditions;
-import org.apache.commons.configuration.Configuration;
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.commons.configuration2.Configuration;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.IdentityRemovalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.PathRetractionStrategy;
 import org.apache.tinkerpop.gremlin.structure.*;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
@@ -33,6 +34,9 @@ import org.umlg.sqlg.structure.topology.Topology;
 import org.umlg.sqlg.structure.topology.VertexLabel;
 import org.umlg.sqlg.util.SqlgUtil;
 
+import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.sql.*;
 import java.util.*;
 import java.util.stream.Stream;
@@ -46,6 +50,28 @@ import static org.apache.tinkerpop.gremlin.structure.Graph.OptOut;
  */
 @OptIn(OptIn.SUITE_STRUCTURE_STANDARD)
 @OptIn(OptIn.SUITE_PROCESS_STANDARD)
+
+@OptOut(test = "org.apache.tinkerpop.gremlin.structure.PropertyTest$BasicPropertyTest",
+        method = "shouldNotAllowNullAddVertex",
+        reason = "nulls")
+@OptOut(test = "org.apache.tinkerpop.gremlin.structure.PropertyTest$BasicPropertyTest",
+        method = "shouldNotAllowNullAddEdge",
+        reason = "nulls")
+@OptOut(test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexTest",
+        method = "g_addVXnullX_propertyXid_nullX",
+        reason = "nulls")
+@OptOut(test = "org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.InjectTest",
+        method = "g_injectXnull_1_3_nullX",
+        reason = "nulls")
+@OptOut(test = "org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.InjectTest",
+        method = "g_injectX10_20_null_20_10_10X_groupCountXxX_dedup_asXyX_projectXa_bX_by_byXselectXxX_selectXselectXyXXX",
+        reason = "nulls")
+@OptOut(test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeTest",
+        method = "g_V_outE_propertyXweight_nullX",
+        reason = "nulls")
+@OptOut(test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexTest",
+        method = "g_V_hasLabelXpersonX_propertyXname_nullX",
+        reason = "nulls")
 
 @OptOut(test = "org.apache.tinkerpop.gremlin.process.traversal.strategy.decoration.SubgraphStrategyProcessTest",
         method = "shouldGenerateCorrectTraversers",
@@ -175,6 +201,10 @@ import static org.apache.tinkerpop.gremlin.structure.Graph.OptOut;
         method = "g_V_repeatXbothX_timesX10X_asXaX_out_asXbX_selectXa_bX",
         reason = "Takes too long")
 @OptOut(
+        test = "org.apache.tinkerpop.gremlin.process.traversal.step.branch.RepeatTest$Traversals",
+        method = "g_VX3X_repeatXbothX_createdXX_untilXloops_is_40XXemit_repeatXin_knowsXX_emit_loopsXisX1Xdedup_values",
+        reason = "Takes too long")
+@OptOut(
         test = "org.apache.tinkerpop.gremlin.structure.GraphTest",
         method = "shouldHaveStandardStringRepresentation",
         reason = "SQLGGRAPH INCLUDES THE JDBC CONNECTION URL.")
@@ -183,6 +213,25 @@ import static org.apache.tinkerpop.gremlin.structure.Graph.OptOut;
         test = "org.apache.tinkerpop.gremlin.structure.GraphTest",
         method = "shouldHaveStandardStringRepresentation",
         reason = "SQLGGRAPH INCLUDES THE JDBC CONNECTION URL.")
+
+
+//IOTest that need to register the SqlgIORegistry
+@OptOut(
+        test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.WriteTest",
+        method = "g_io_write_withXwrite_gryoX",
+        reason = "Needs to register SqlgIoRegistryV3, this test is duplicated in TestIo")
+@OptOut(
+        test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.WriteTest",
+        method = "g_io_write_withXwriter_graphsonX",
+        reason = "Needs to register SqlgIoRegistryV3, this test is duplicated in TestIo")
+@OptOut(
+        test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.WriteTest",
+        method = "g_io_writeXjsonX",
+        reason = "Needs to register SqlgIoRegistryV3, this test is duplicated in TestIo")
+@OptOut(
+        test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.WriteTest",
+        method = "g_io_writeXkryoX",
+        reason = "Needs to register SqlgIoRegistryV3, this test is duplicated in TestIo")
 public class SqlgGraph implements Graph {
 
     public static final String DATA_SOURCE = "sqlg.dataSource";
@@ -193,13 +242,13 @@ public class SqlgGraph implements Graph {
     private final SqlgDataSource sqlgDataSource;
     private static final Logger logger = LoggerFactory.getLogger(SqlgGraph.class);
     private final SqlgTransaction sqlgTransaction;
-    private Topology topology;
-    private GremlinParser gremlinParser;
-    private SqlDialect sqlDialect;
-    private String jdbcUrl;
+    private final Topology topology;
+    private final GremlinParser gremlinParser;
+    private final SqlDialect sqlDialect;
+    private final String jdbcUrl;
     private final ObjectMapper mapper = new ObjectMapper();
-    private Configuration configuration;
-    private final ISqlGFeatures features = new SqlGFeatures();
+    private final Configuration configuration;
+    private final ISqlGFeatures features = new SqlgFeatures();
 
     /**
      * the build version of sqlg
@@ -217,21 +266,26 @@ public class SqlgGraph implements Graph {
                                 new SqlgLocalStepStrategy(),
                                 new SqlgWhereStrategy(),
                                 new SqlgRepeatStepStrategy(),
-                                new SqlgOptionalStepStrategy(),
-                                new SqlgChooseStepStrategy(),
+                                new SqlgOptionalStepStrategy<>(),
+                                new SqlgChooseStepStrategy<>(),
                                 new SqlgTraversalFilterStepStrategy<>(),
-                                new SqlgWhereTraversalStepStrategy(),
-                                new SqlgOrStepStepStrategy(),
-                                new SqlgAndStepStepStrategy(),
-                                new SqlgNotStepStepStrategy(),
+                                new SqlgWhereTraversalStepStrategy<>(),
+                                new SqlgOrStepStepStrategy<>(),
+                                new SqlgAndStepStepStrategy<>(),
+                                new SqlgNotStepStepStrategy<>(),
                                 new SqlgHasStepStrategy(),
                                 new SqlgDropStepStrategy(),
                                 new SqlgRestrictPropertiesStrategy(),
                                 new SqlgAddVertexStartStepStrategy(),
+                                new SqlgUnionStepStrategy(),
+                                new SqlgStartStepStrategy(),
+                                new SqlgInjectStepStrategy(),
+                                new SqlgHasNextStepStrategy(),
+                                new SqlgFoldStepStrategy(),
 //                                new SqlgAddEdgeStartStepStrategy(),
                                 TopologyStrategy.build().create())
                         .removeStrategies(
-                                PathRetractionStrategy.class)
+                                PathRetractionStrategy.class, IdentityRemovalStrategy.class)
         );
     }
 
@@ -239,12 +293,14 @@ public class SqlgGraph implements Graph {
         if (null == pathToSqlgProperties) throw Graph.Exceptions.argumentCanNotBeNull("pathToSqlgProperties");
 
         try {
-            return open(new PropertiesConfiguration(pathToSqlgProperties));
+            Configurations configs = new Configurations();
+            Configuration config = configs.properties(new File(pathToSqlgProperties));
+            return open(config);
         } catch (ConfigurationException e) {
             throw new RuntimeException(e);
         }
-    }  
-    
+    }
+
     public static <G extends Graph> G open(final Configuration configuration) {
         SqlgDataSource dataSource = SqlgDataSourceFactory.create(configuration);
         try {
@@ -266,7 +322,7 @@ public class SqlgGraph implements Graph {
         SqlgStartupManager sqlgStartupManager = new SqlgStartupManager(sqlgGraph);
         sqlgStartupManager.loadSqlgSchema();
         sqlgGraph.buildVersion = sqlgStartupManager.getBuildVersion();
-        return (G)sqlgGraph;
+        return (G) sqlgGraph;
     }
 
     private SqlgGraph(final Configuration configuration, SqlgDataSource dataSource) {
@@ -296,9 +352,8 @@ public class SqlgGraph implements Graph {
         this.tx().readWrite();
         //Instantiating Topology will create the 'public' schema if it does not exist.
         this.topology = new Topology(this);
-        this.topology.setLOCK_TIMEOUT_MINUTES(configuration.getInt("lock.timeout.minutes", 2));
         this.gremlinParser = new GremlinParser(this);
-        if (!this.sqlDialect.supportsSchemas() && !this.getTopology().getSchema(this.sqlDialect.getPublicSchema()).isPresent()) {
+        if (!this.sqlDialect.supportsSchemas() && this.getTopology().getSchema(this.sqlDialect.getPublicSchema()).isEmpty()) {
             //This is for mariadb. Need to make sure a db called public exist
             this.getTopology().ensureSchemaExist(this.sqlDialect.getPublicSchema());
         }
@@ -333,10 +388,6 @@ public class SqlgGraph implements Graph {
 
     public GraphTraversalSource topology() {
         return this.traversal().withStrategies(TopologyStrategy.build().sqlgSchema().create());
-    }
-
-    public GraphTraversalSource globalUniqueIndexes() {
-        return this.traversal().withStrategies(TopologyStrategy.build().globallyUniqueIndexes().create());
     }
 
     @Override
@@ -544,6 +595,17 @@ public class SqlgGraph implements Graph {
         logger.debug(String.format("Closing graph. Connection url = %s, maxPoolSize = %d", this.configuration.getString(JDBC_URL), configuration.getInt("maxPoolSize", 100)));
         if (this.tx().isOpen())
             this.tx().close();
+        try {
+            Class<?> clazz = Class.forName("org.umlg.sqlg.ui.SqlgUI");
+            try {
+                Method method = clazz.getMethod("stop");
+                method.invoke(null, null); // static method doesn't have an instance
+            } catch (IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
+                throw new RuntimeException(e);
+            }
+        } catch (ClassNotFoundException ignore) {
+            //swallow
+        }
         this.topology.close();
         this.sqlgDataSource.close();
     }
@@ -576,7 +638,7 @@ public class SqlgGraph implements Graph {
         boolean supportsBatchMode();
     }
 
-    public class SqlGFeatures implements ISqlGFeatures {
+    public class SqlgFeatures implements ISqlGFeatures {
         @Override
         public GraphFeatures graph() {
             return new GraphFeatures() {
@@ -600,12 +662,12 @@ public class SqlgGraph implements Graph {
 
         @Override
         public VertexFeatures vertex() {
-            return new SqlVertexFeatures();
+            return new SqlgVertexFeatures();
         }
 
         @Override
         public EdgeFeatures edge() {
-            return new SqlEdgeFeatures();
+            return new SqlgEdgeFeatures();
         }
 
         @Override
@@ -618,7 +680,13 @@ public class SqlgGraph implements Graph {
             return getSqlDialect().supportsBatchMode();
         }
 
-        class SqlVertexFeatures implements VertexFeatures {
+        class SqlgVertexFeatures implements VertexFeatures {
+
+            @FeatureDescriptor(name = FEATURE_NULL_PROPERTY_VALUES)
+            @Override
+            public boolean supportsNullPropertyValues() {
+                return false;
+            }
 
             @Override
             @FeatureDescriptor(name = FEATURE_MULTI_PROPERTIES)
@@ -670,7 +738,7 @@ public class SqlgGraph implements Graph {
 
             @Override
             public VertexPropertyFeatures properties() {
-                return new SqlGVertexPropertyFeatures();
+                return new SqlgVertexPropertyFeatures();
             }
 
             @Override
@@ -679,7 +747,13 @@ public class SqlgGraph implements Graph {
             }
         }
 
-        class SqlEdgeFeatures implements EdgeFeatures {
+        class SqlgEdgeFeatures implements EdgeFeatures {
+
+            @FeatureDescriptor(name = FEATURE_NULL_PROPERTY_VALUES)
+            @Override
+            public boolean supportsNullPropertyValues() {
+                return false;
+            }
 
             @Override
             @FeatureDescriptor(name = FEATURE_USER_SUPPLIED_IDS)
@@ -724,7 +798,12 @@ public class SqlgGraph implements Graph {
 
         }
 
-        class SqlGVertexPropertyFeatures implements VertexPropertyFeatures {
+        class SqlgVertexPropertyFeatures implements VertexPropertyFeatures {
+
+            @FeatureDescriptor(name = FEATURE_NULL_PROPERTY_VALUES)
+            public boolean supportsNullPropertyValues() {
+                return false;
+            }
 
             @Override
             @FeatureDescriptor(name = FEATURE_REMOVE_PROPERTY)
@@ -1171,7 +1250,7 @@ public class SqlgGraph implements Graph {
      * @return the build version
      */
     public String getBuildVersion() {
-        return buildVersion;
+        return this.buildVersion;
     }
 
 }

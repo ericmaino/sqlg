@@ -1,8 +1,8 @@
 package org.umlg.sqlg.test.roles;
 
-import org.apache.commons.configuration.Configuration;
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.commons.configuration2.Configuration;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
@@ -34,7 +34,8 @@ public class TestReadOnlyRole extends BaseTest {
     @Before
     public void before() throws Exception {
         //H2 is locking on opening readOnly connection.
-        Assume.assumeFalse(isH2());
+        //TODO remove hsqldb depending on https://github.com/pietermartin/sqlg/issues/411
+        Assume.assumeFalse(isH2() || isHsqldb());
         super.before();
     }
 
@@ -47,7 +48,8 @@ public class TestReadOnlyRole extends BaseTest {
         this.sqlgGraph.addVertex(T.label, "A", "name", "a2");
         this.sqlgGraph.tx().commit();
 
-        Configuration readOnlyConfiguration = new PropertiesConfiguration("sqlg.readonly.properties");
+        Configurations configs = new Configurations();
+        Configuration readOnlyConfiguration = configs.properties("sqlg.readonly.properties");
         try (SqlgGraph readOnlyGraph = SqlgGraph.open(readOnlyConfiguration)) {
             List<Vertex> vertices = readOnlyGraph.traversal().V().hasLabel("A").toList();
             Assert.assertEquals(2, vertices.size());
@@ -68,7 +70,8 @@ public class TestReadOnlyRole extends BaseTest {
         this.sqlgGraph.addVertex(T.label, "A.A", "name", "a2");
         this.sqlgGraph.tx().commit();
 
-        Configuration readOnlyConfiguration = new PropertiesConfiguration("sqlg.readonly.properties");
+        Configurations configs = new Configurations();
+        Configuration readOnlyConfiguration = configs.properties("sqlg.readonly.properties");
         try (SqlgGraph readOnlyGraph = SqlgGraph.open(readOnlyConfiguration)) {
             List<Vertex> vertices = readOnlyGraph.traversal().V().hasLabel("A.A").toList();
             Assert.assertEquals(2, vertices.size());
@@ -91,7 +94,8 @@ public class TestReadOnlyRole extends BaseTest {
         a.addEdge("ab", b, "name", "ab1");
         this.sqlgGraph.tx().commit();
 
-        Configuration readOnlyConfiguration = new PropertiesConfiguration("sqlg.readonly.properties");
+        Configurations configs = new Configurations();
+        Configuration readOnlyConfiguration = configs.properties("sqlg.readonly.properties");
         try (SqlgGraph readOnlyGraph = SqlgGraph.open(readOnlyConfiguration)) {
             List<Edge> edges = readOnlyGraph.traversal().V().hasLabel("A.A").outE("ab").toList();
             Assert.assertEquals(2, edges.size());
@@ -113,7 +117,7 @@ public class TestReadOnlyRole extends BaseTest {
         }
 
         @Override
-        public void change(TopologyInf topologyInf, String oldValue, TopologyChangeAction action) {
+        public void change(TopologyInf topologyInf, TopologyInf oldValue, TopologyChangeAction action) {
             switch (action) {
                 case CREATE:
                     if (topologyInf instanceof VertexLabel) {

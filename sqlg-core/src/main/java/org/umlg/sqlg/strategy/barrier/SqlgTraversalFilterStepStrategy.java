@@ -10,7 +10,6 @@ import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.Inli
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.umlg.sqlg.step.barrier.SqlgTraversalFilterStepBarrier;
 import org.umlg.sqlg.structure.SqlgGraph;
-import org.umlg.sqlg.util.SqlgTraversalUtil;
 
 import java.util.List;
 import java.util.Set;
@@ -30,12 +29,12 @@ public class SqlgTraversalFilterStepStrategy<S> extends AbstractTraversalStrateg
     @Override
     public void apply(final Traversal.Admin<?, ?> traversal) {
         //Only optimize SqlgGraph. StarGraph also passes through here.
-        if (!(traversal.getGraph().orElseThrow(IllegalStateException::new) instanceof SqlgGraph)) {
+        if (traversal.getGraph().isEmpty() || !(traversal.getGraph().orElseThrow(IllegalStateException::new) instanceof SqlgGraph)) {
             return;
         }
-        if (!SqlgTraversalUtil.mayOptimize(traversal)) {
-            return;
-        }
+//        if (!SqlgTraversalUtil.mayOptimize(traversal)) {
+//            return;
+//        }
         List<TraversalFilterStep> traversalFilterSteps = TraversalHelper.getStepsOfAssignableClass(TraversalFilterStep.class, traversal);
         for (@SuppressWarnings("unchecked") TraversalFilterStep<S> traversalFilterStep : traversalFilterSteps) {
 

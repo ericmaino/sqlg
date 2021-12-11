@@ -14,6 +14,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.apache.tinkerpop.gremlin.structure.Property;
 import org.umlg.sqlg.sql.dialect.BaseSqlDialect;
+import org.umlg.sqlg.sql.parse.ColumnList;
 import org.umlg.sqlg.sql.parse.SchemaTableTree;
 import org.umlg.sqlg.strategy.SqlgSqlExecutor;
 import org.umlg.sqlg.structure.*;
@@ -565,10 +566,6 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                 "\"createdOn\" DATETIME, " +
                 "\"name\" VARCHAR(255), " +
                 "\"index_type\" VARCHAR(255));");
-        result.add("CREATE TABLE \"sqlg_schema\".\"V_globalUniqueIndex\" (" +
-                "\"ID\" BIGINT IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" DATETIME, " +
-                "\"name\" VARCHAR(255));");
 
         result.add("CREATE TABLE \"sqlg_schema\".\"E_schema_vertex\"(" +
                 "\"ID\" BIGINT IDENTITY PRIMARY KEY, " +
@@ -689,12 +686,6 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                 "\"pid\" INTEGER, " +
                 "\"log\" VARCHAR);");
 
-        result.add("CREATE TABLE \"sqlg_schema\".\"E_globalUniqueIndex_property\"(" +
-                "\"ID\" BIGINT IDENTITY PRIMARY KEY, " +
-                "\"sqlg_schema.property__I\" BIGINT, " +
-                "\"sqlg_schema.globalUniqueIndex__O\" BIGINT, " +
-                "FOREIGN KEY (\"sqlg_schema.property__I\") REFERENCES \"sqlg_schema\".\"V_property\" (\"ID\"), " +
-                "FOREIGN KEY (\"sqlg_schema.globalUniqueIndex__O\") REFERENCES \"sqlg_schema\".\"V_globalUniqueIndex\" (\"ID\"));");
         return result;
     }
 
@@ -1045,60 +1036,6 @@ public class MSSqlServerDialect extends BaseSqlDialect {
     }
 
     @Override
-    public void flushVertexGlobalUniqueIndexes(SqlgGraph sqlgGraph, Map<SchemaTable, Pair<SortedSet<String>, Map<SqlgVertex, Map<String, Object>>>> vertexCache) {
-        for (SchemaTable schemaTable : vertexCache.keySet()) {
-            Pair<SortedSet<String>, Map<SqlgVertex, Map<String, Object>>> vertices = vertexCache.get(schemaTable);
-            Map<String, PropertyColumn> propertyColumnMap = sqlgGraph.getTopology().getPropertiesFor(schemaTable.withPrefix(VERTEX_PREFIX));
-            for (Map.Entry<String, PropertyColumn> propertyColumnEntry : propertyColumnMap.entrySet()) {
-                PropertyColumn propertyColumn = propertyColumnEntry.getValue();
-                for (GlobalUniqueIndex globalUniqueIndex : propertyColumn.getGlobalUniqueIndices()) {
-                    try {
-                        Connection connection = sqlgGraph.tx().getConnection();
-                        SQLServerConnection sqlServerConnection = connection.unwrap(SQLServerConnection.class);
-                        try (SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlServerConnection)) {
-                            bulkCopy.setDestinationTableName(sqlgGraph.getSqlDialect().maybeWrapInQoutes(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA) + "." +
-                                    sqlgGraph.getSqlDialect().maybeWrapInQoutes(VERTEX_PREFIX + globalUniqueIndex.getName())
-                            );
-                            bulkCopy.writeToServer(new SQLServerVertexGlobalUniqueIndexBulkRecord(bulkCopy, sqlgGraph, vertices, propertyColumn));
-                        }
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-        }
-    }
-
-    @Override
-    public void flushEdgeGlobalUniqueIndexes(SqlgGraph sqlgGraph,
-                                             Map<MetaEdge, Pair<SortedSet<String>, Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>>>> edgeCache) {
-        for (MetaEdge metaEdge : edgeCache.keySet()) {
-
-            Pair<SortedSet<String>, Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>>> triples = edgeCache.get(metaEdge);
-            Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>> edgeMap = triples.getRight();
-            Map<String, PropertyColumn> propertyColumnMap = sqlgGraph.getTopology().getPropertiesFor(metaEdge.getSchemaTable().withPrefix(EDGE_PREFIX));
-
-            for (Map.Entry<String, PropertyColumn> propertyColumnEntry : propertyColumnMap.entrySet()) {
-                PropertyColumn propertyColumn = propertyColumnEntry.getValue();
-                for (GlobalUniqueIndex globalUniqueIndex : propertyColumn.getGlobalUniqueIndices()) {
-                    try {
-                        Connection connection = sqlgGraph.tx().getConnection();
-                        SQLServerConnection sqlServerConnection = connection.unwrap(SQLServerConnection.class);
-                        try (SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlServerConnection)) {
-                            bulkCopy.setDestinationTableName(sqlgGraph.getSqlDialect().maybeWrapInQoutes(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA) + "." +
-                                    sqlgGraph.getSqlDialect().maybeWrapInQoutes(VERTEX_PREFIX + globalUniqueIndex.getName())
-                            );
-                            bulkCopy.writeToServer(new SQLServerEdgeGlobalUniqueIndexBulkRecord(bulkCopy, sqlgGraph, edgeMap, propertyColumn));
-                        }
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-        }
-    }
-
-    @Override
     public boolean supportsSchemaIfNotExists() {
         return false;
     }
@@ -1176,13 +1113,13 @@ public class MSSqlServerDialect extends BaseSqlDialect {
 
     @SuppressWarnings("Duplicates")
     @Override
-    public List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> drop(
+    public List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> drop(
             SqlgGraph sqlgGraph,
             String leafElementsToDelete,
             @Nullable  String edgesToDelete,
             LinkedList<SchemaTableTree> distinctQueryStack) {
 
-        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> sqls = new ArrayList<>();
+        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> sqls = new ArrayList<>();
         SchemaTableTree last = distinctQueryStack.getLast();
 
         SchemaTableTree lastEdge = null;
@@ -1226,11 +1163,6 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                     sb.append("WHERE ");
                     if (last.isHasIDPrimaryKey()) {
                         sb.append(maybeWrapInQoutes(lastVertexLabel.getSchema().getName() + "." + lastVertexLabel.getName() + Topology.OUT_VERTEX_COLUMN_END));
-
-//                        sb.append(maybeWrapInQoutes(edgeLabel.getSchema().getName()));
-//                        sb.append(".");
-//                        sb.append(maybeWrapInQoutes(Topology.EDGE_PREFIX + edgeLabel.getName()));
-//                        sb.append(".").append(maybeWrapInQoutes("ID"));
                         sb.append(" = x.").append(last.lastMappedAliasIdentifier("ID"));
                     } else {
                         int count = 1;
@@ -1238,14 +1170,14 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                             sb.append(maybeWrapInQoutes(edgeLabel.getSchema().getName()));
                             sb.append(".");
                             sb.append(maybeWrapInQoutes(Topology.EDGE_PREFIX + edgeLabel.getName()));
-                            sb.append(".").append(maybeWrapInQoutes(identifier));
+                            sb.append(".").append(maybeWrapInQoutes(lastVertexLabel.getSchema().getName() + "." + lastVertexLabel.getName() + "." + identifier + Topology.OUT_VERTEX_COLUMN_END));
                             sb.append(" = x.").append(maybeWrapInQoutes(last.lastMappedAliasIdentifier(identifier)));
                             if (count++ < edgeLabel.getIdentifiers().size()) {
                                 sb.append(" AND ");
                             }
                         }
                     }
-                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), SchemaTable.of(edgeLabel.getSchema().getName(), Topology.EDGE_PREFIX + edgeLabel.getName())));
+                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
                 }
             }
             for (Map.Entry<String, EdgeLabel> edgeLabelEntry : lastVertexLabel.getInEdgeLabels().entrySet()) {
@@ -1284,7 +1216,7 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                             }
                         }
                     }
-                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), SchemaTable.of(edgeLabel.getSchema().getName(), Topology.EDGE_PREFIX + edgeLabel.getName())));
+                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
                 }
             }
         }
@@ -1293,11 +1225,11 @@ public class MSSqlServerDialect extends BaseSqlDialect {
         if (queryTraversesEdge) {
             for (EdgeLabel edgeLabel : lastVertexLabel.getOutEdgeLabels().values()) {
                 String edgeTableName = (maybeWrapInQoutes(edgeLabel.getSchema().getName())) + "." +  maybeWrapInQoutes(EDGE_PREFIX + edgeLabel.getLabel());
-                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOffReferentialConstraintCheck(edgeTableName), SchemaTable.of(edgeLabel.getSchema().getName(), edgeLabel.getLabel())));
+                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOffReferentialConstraintCheck(edgeTableName), false));
             }
             for (EdgeLabel edgeLabel : lastVertexLabel.getInEdgeLabels().values()) {
                 String edgeTableName = (maybeWrapInQoutes(edgeLabel.getSchema().getName())) + "." + maybeWrapInQoutes(EDGE_PREFIX + edgeLabel.getLabel());
-                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOffReferentialConstraintCheck(edgeTableName), SchemaTable.of(edgeLabel.getSchema().getName(), edgeLabel.getLabel())));
+                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOffReferentialConstraintCheck(edgeTableName), false));
             }
         }
         //Delete the leaf vertices, if there are foreign keys then its been deferred.
@@ -1329,7 +1261,7 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                 }
             }
         }
-        sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), last.getSchemaTable()));
+        sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
 
         if (queryTraversesEdge) {
             sb = new StringBuilder();
@@ -1361,17 +1293,17 @@ public class MSSqlServerDialect extends BaseSqlDialect {
                 }
             }
 
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.EDGE, sb.toString(), lastEdge.getSchemaTable()));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.EDGE, sb.toString(), false));
         }
         //Enable the foreign key constraint
         if (queryTraversesEdge) {
             for (EdgeLabel edgeLabel : lastVertexLabel.getOutEdgeLabels().values()) {
                 String edgeTableName = (maybeWrapInQoutes(edgeLabel.getSchema().getName())) + "." +  maybeWrapInQoutes(EDGE_PREFIX + edgeLabel.getLabel());
-                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOnReferentialConstraintCheck(edgeTableName), null));
+                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOnReferentialConstraintCheck(edgeTableName), false));
             }
             for (EdgeLabel edgeLabel : lastVertexLabel.getInEdgeLabels().values()) {
                 String edgeTableName = (maybeWrapInQoutes(edgeLabel.getSchema().getName())) + "." + maybeWrapInQoutes(EDGE_PREFIX + edgeLabel.getLabel());
-                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOnReferentialConstraintCheck(edgeTableName), null));
+                sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, this.sqlToTurnOnReferentialConstraintCheck(edgeTableName), false));
             }
         }
         return sqls;
@@ -1739,5 +1671,26 @@ public class MSSqlServerDialect extends BaseSqlDialect {
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Override
+    public String toSelectString(boolean partOfDuplicateQuery, ColumnList.Column column, String alias) {
+        StringBuilder sb = new StringBuilder();
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null) {
+            sb.append(column.getAggregateFunction().toUpperCase());
+            sb.append("(CAST(");
+        }
+        sb.append(maybeWrapInQoutes(column.getSchema()));
+        sb.append(".");
+        sb.append(maybeWrapInQoutes(column.getTable()));
+        sb.append(".");
+        sb.append(maybeWrapInQoutes(column.getColumn()));
+        if (!partOfDuplicateQuery && column.getAggregateFunction() != null) {
+            sb.append(" as DOUBLE PRECISION)) AS ").append(maybeWrapInQoutes(alias));
+            sb.append(", COUNT(1) AS ").append(maybeWrapInQoutes(alias + "_weight"));
+        } else {
+            sb.append(" AS ").append(maybeWrapInQoutes(alias));
+        }
+        return sb.toString();
     }
 }

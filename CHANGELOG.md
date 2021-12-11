@@ -1,4 +1,160 @@
+##2.1.6
+
+* BREAKING CHANGE: Changed `TopologyListener`'s interface, `oldValue` is now a `TopologyInf`
+*Implemented [#428](https://github.com/pietermartin/sqlg/issues/428). 
+Added ability to import foreign schemas and to import tables into an existing schema.
+Both import must be consistent, i.e. can not reference elements that are not being imported.
+
+* Removed deprecated `RecordId.getId()`
+ 
+##2.1.5
+
+* Upgrade to TinkerPop 3.1.5
+* Remove support for globally unique indexes
+* Update support for citus to work with citus 10.x
+
+##2.1.4
+
+* Upgrade HSQLDB to 2.6.1
+* Support partitioned primary keys.
+* Added postgresql hash partition support.
+
+##2.1.3
+
+* Added a ui to visualize and delete schema elements.
+
+##2.1.1
+
+*Fix bug [#417](https://github.com/pietermartin/sqlg/issues/417). Fix issue with dangling Index meta data on property deletions
+
+*Fix bug [#416](https://github.com/pietermartin/sqlg/issues/416). Fixed bug with first iteration state
+
+*Fix bug [#415](https://github.com/pietermartin/sqlg/issues/415). Optimize InjectStep and create `SqlTraverser` in `SqlgStartStepBarrier`
+
+*Deprecate global unique identifiers
+
+##2.1.0
+
+* Removed all attempts at preventing database dead locks from happening. Sqlg no longer takes any kind of locks
+when do schema creation scripts.
+  This means that preventing database dead locks is now the responsibility of the client.
+  Sqlg's attempt at managing this was a bad idea from the start. The lock Sqlg took was too coarse and ended
+  up causing lock timeouts. The suggested pattern to use now is to simply retry the transaction x number of times.
+
+* Removed `time zone` from Sqlg's timestamp data types. Sqlg guarantees that all clients regardless of their time zone will see the timestamp as stored in the db. This meant that Sqlg had to undo any manipulation of the timestamp the db might have done. This is because Sqlg used the `timestamp with time zone` data type.
+`2.1.0` removes the time zone part. The sql below will generate the `ALTER TABLE...` statements to change the type of all columns with `time zone`.
+
+ALTER `timestamp with time zone` to `timestamp without time zone` and
+  `time with time zone` to `time without time zone`, 
+
+```
+select 
+	'ALTER TABLE "' || e.name || '"."V_' || c.name || '" ALTER COLUMN "' || a.name || '" TYPE timestamp' || ';'
+from 
+	sqlg_schema."V_property" a join 
+	sqlg_schema."E_vertex_property" b on a."ID" = b."sqlg_schema.property__I" join
+	sqlg_schema."V_vertex" c on b."sqlg_schema.vertex__O" = c."ID" join
+	sqlg_schema."E_schema_vertex" d on c."ID" = d."sqlg_schema.vertex__I" join
+	sqlg_schema."V_schema" e on d."sqlg_schema.schema__O" = e."ID"
+where 
+	a.type = 'LOCALDATETIME'
+	
+UNION ALL	
+	
+select 
+	'ALTER TABLE "' || e.name || '"."V_' || c.name || '" ALTER COLUMN "' || a.name || '" TYPE time' || ';'
+from 
+	sqlg_schema."V_property" a join 
+	sqlg_schema."E_vertex_property" b on a."ID" = b."sqlg_schema.property__I" join
+	sqlg_schema."V_vertex" c on b."sqlg_schema.vertex__O" = c."ID" join
+	sqlg_schema."E_schema_vertex" d on c."ID" = d."sqlg_schema.vertex__I" join
+	sqlg_schema."V_schema" e on d."sqlg_schema.schema__O" = e."ID"
+where 
+	a.type = 'LOCALTIME'
+
+UNION ALL
+	
+select 
+	'ALTER TABLE "' || e.name || '"."V_' || c.name || '" ALTER COLUMN "' || a.name || '" TYPE timestamp' || ';'
+from 
+	sqlg_schema."V_property" a join 
+	sqlg_schema."E_vertex_property" b on a."ID" = b."sqlg_schema.property__I" join
+	sqlg_schema."V_vertex" c on b."sqlg_schema.vertex__O" = c."ID" join
+	sqlg_schema."E_schema_vertex" d on c."ID" = d."sqlg_schema.vertex__I" join
+	sqlg_schema."V_schema" e on d."sqlg_schema.schema__O" = e."ID"
+where 
+	a.type = 'ZONEDDATETIME'	
+	
+UNION ALL
+
+select 
+	'ALTER TABLE "' || g.name || '"."E_' || c.name || '" ALTER COLUMN "' || a.name || '" TYPE timestamp' || ';'
+from 
+	sqlg_schema."V_property" a join 
+	sqlg_schema."E_edge_property" b on a."ID" = b."sqlg_schema.property__I" join
+	sqlg_schema."V_edge" c on b."sqlg_schema.edge__O" = c."ID" join
+	sqlg_schema."E_out_edges" d on c."ID" = d."sqlg_schema.edge__I" join
+	sqlg_schema."V_vertex" e on d."sqlg_schema.vertex__O" = e."ID" join
+	sqlg_schema."E_schema_vertex" f on e."ID" = f."sqlg_schema.vertex__I" join
+	sqlg_schema."V_schema" g on f."sqlg_schema.schema__O" = g."ID"
+where 
+	a.type = 'LOCALDATETIME'	
+	
+UNION ALL
+
+select 
+	'ALTER TABLE "' || g.name || '"."E_' || c.name || '" ALTER COLUMN "' || a.name || '" TYPE time' || ';'
+from 
+	sqlg_schema."V_property" a join 
+	sqlg_schema."E_edge_property" b on a."ID" = b."sqlg_schema.property__I" join
+	sqlg_schema."V_edge" c on b."sqlg_schema.edge__O" = c."ID" join
+	sqlg_schema."E_out_edges" d on c."ID" = d."sqlg_schema.edge__I" join
+	sqlg_schema."V_vertex" e on d."sqlg_schema.vertex__O" = e."ID" join
+	sqlg_schema."E_schema_vertex" f on e."ID" = f."sqlg_schema.vertex__I" join
+	sqlg_schema."V_schema" g on f."sqlg_schema.schema__O" = g."ID"
+where 
+	a.type = 'LOCALTIME'	
+	
+UNION ALL
+
+select 
+	'ALTER TABLE "' || g.name || '"."E_' || c.name || '" ALTER COLUMN "' || a.name || '" TYPE timestamp' || ';'
+from 
+	sqlg_schema."V_property" a join 
+	sqlg_schema."E_edge_property" b on a."ID" = b."sqlg_schema.property__I" join
+	sqlg_schema."V_edge" c on b."sqlg_schema.edge__O" = c."ID" join
+	sqlg_schema."E_out_edges" d on c."ID" = d."sqlg_schema.edge__I" join
+	sqlg_schema."V_vertex" e on d."sqlg_schema.vertex__O" = e."ID" join
+	sqlg_schema."E_schema_vertex" f on e."ID" = f."sqlg_schema.vertex__I" join
+	sqlg_schema."V_schema" g on f."sqlg_schema.schema__O" = g."ID"
+where 
+	a.type = 'ZONEDDATETIME'	
+	
+```
+
+##2.0.3
+
+* Merge the reducing branch in. Sqlg now optimizes reducing steps.
+  `MaxGlobalStep`, `MinGlobalStep`, `SumGlobalStep`, `MeanGlobalStep` and `GroupStep` are supported.
+
+*Fix bug [#398](https://github.com/pietermartin/sqlg/issues/398). Fixed a bug in the sql generation.
+
 ##2.0.2
+
+*Implement enhancement[#296](https://github.com/pietermartin/sqlg/issues/396) Replace `TIME WITH TIME ZONE` with `TIME`.
+This is a breaking change, the databases will have to run the command, `ALTER TABLENAME ALTER COLUMN column_name TYPE TIME;`.
+
+*Fix bug [#395](https://github.com/pietermartin/sqlg/issues/395). Added a toggle in the failing tests to truncate
+the time to MILLIS.
+
+* Upgrade HSQLDB to 2.5.1
+
+* Upgrade H2 to 1.4.200
+
+*Fix bug [#359](https://github.com/pietermartin/sqlg/issues/359). The labels were not being handled properly. 
+`UnionStep` is now optimized by `SqlgUnionStepBarrier` and `Startstep` with `SqlgStartStepBarrier`.
+
+* Added support for `postgresql` array operators via [PR](https://github.com/pietermartin/sqlg/pull/360)
 
 *Upgrade to TinkerPop 3.4.1, support added for docker/travis [#358](https://github.com/pietermartin/sqlg/pull/358)
 
@@ -97,7 +253,7 @@ Currently the `optional`, `choose`, `repeat` and `local` steps have this optimiz
 and a `V_log` table which hold the changes made. The changes are in turn sent to other Graphs and JVMs using Postgresql's `notify` mechanism.
 * Added `TopologyListener` as a mechanism to observe changes to the topology.
 * Added support for global  unique indexes. This means that a unique index can be placed on multiple properties from any Vertex or Edge.
-* Rewrite of the topology/schema management. `SchemaManager` is replaced with `Topology`.
+* Rewrite of the topology/schema management. `TopologyManager` is replaced with `Topology`.
 There are now classes representing the topology. `Topology`, `Schema`, `VertexLabel`, `EdgeLabel`, `PropertyColumn`, `Index` and `GlobalUniqueIndex`
 * Strengthened the reloading of the topology from the information_schema tables.
 This highlighted some limitations. It is not possible to tell a primitive array from a object array. 
@@ -144,7 +300,7 @@ As such all arrays are  loaded as object arrays. i.e. `int[]{1,2,3}` will become
 * Refactor `RepeatStep` optimization to follow the same sql pattern as the `OptionalStep` optimization.
 * Optimized the `OptionalStep`.
 * Optimize `hasId(...)`
-* Sqlg stores the schema in the graph. It is accessible via the `TopologyStrategy`. eg. `TopologyStrategy.build().selectFrom(SchemaManager.SQLG_SCHEMA_SCHEMA_TABLES)`
+* Sqlg stores the schema in the graph. It is accessible via the `TopologyStrategy`. eg. `TopologyStrategy.build().selectFrom(TopologyManager.SQLG_SCHEMA_SCHEMA_TABLES)`
 * Remove `SqlgTransaction.batchCommit()` as is no longer useful as the embedded topology change forced sqlg to auto flush the batch before any query.
 * Add support for `java.time.ZonedDateTime`, `java.time.Duration` and `java.time.Period`
 * Add support for array types in batch mode. `String[], int[], double[], long[], float[], short[], byte[]`

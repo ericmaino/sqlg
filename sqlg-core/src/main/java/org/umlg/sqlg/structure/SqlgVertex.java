@@ -155,7 +155,8 @@ public class SqlgVertex extends SqlgElement implements Vertex {
         }
         Triple<Map<String, PropertyType>, Map<String, Object>, Map<String, Object>> keyValueMapTriple = SqlgUtil.validateVertexKeysValues(this.sqlgGraph.getSqlDialect(), keyValues, previousBatchModeKeys);
         if (!complete && keyValueMapTriple.getRight().size() != keyValueMapTriple.getMiddle().size()) {
-            throw Property.Exceptions.propertyValueCanNotBeNull();
+//            throw Property.Exceptions.propertyValueCanNotBeNull();
+            throw Property.Exceptions.propertyKeyCanNotBeNull();
         }
         final Pair<Map<String, Object>, Map<String, Object>> keyValueMapPair = Pair.of(keyValueMapTriple.getMiddle(), keyValueMapTriple.getRight());
         final Map<String, PropertyType> columns = keyValueMapTriple.getLeft();
@@ -166,7 +167,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
 
         this.sqlgGraph.getTopology().threadWriteLock();
 
-        //noinspection OptionalGetWithoutIsPresent
         EdgeLabel edgeLabel = this.sqlgGraph.getTopology().ensureEdgeLabelExist(label, outVertexLabelOptional.get(), inVertexLabelOptional.get(), columns);
         if (!edgeLabel.hasIDPrimaryKey()) {
             Preconditions.checkArgument(columns.keySet().containsAll(edgeLabel.getIdentifiers()), "identifiers must be present %s", edgeLabel.getIdentifiers());
@@ -181,7 +181,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
         return (Map<String, VertexProperty<V>>) propertiesMap;
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public <V> VertexProperty<V> property(final String key) {
         this.sqlgGraph.tx().readWrite();
@@ -199,7 +198,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
         }
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public <V> VertexProperty<V> property(final String key, final V value) {
         if (this.removed) {
@@ -229,7 +227,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
         return new SqlgVertexProperty<>(this.sqlgGraph, this, key, value);
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     protected Property emptyProperty() {
         return VertexProperty.empty();
@@ -425,9 +422,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
                     throw new RuntimeException(String.format("Could not retrieve the id after an insert into %s", Topology.VERTICES));
                 }
             }
-            if (!temporary) {
-                insertGlobalUniqueIndex(keyValueMap, propertyColumns);
-            }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
@@ -437,7 +431,10 @@ public class SqlgVertex extends SqlgElement implements Vertex {
     protected void load() {
         //if in batch mode, only load vertexes that are not new.
         //new vertexes have no id, impossible to load, but then all its properties are already cached.
-        if ((this.properties.isEmpty() && !this.sqlgGraph.tx().isInBatchMode()) ||
+
+        //sequenceId == -1 for aggregate functions
+        if (this.recordId != null && this.recordId.hasSequenceId() && this.recordId.sequenceId() != -1 &&
+                (this.properties.isEmpty() && !this.sqlgGraph.tx().isInBatchMode()) ||
                 (this.properties.isEmpty() && this.sqlgGraph.getSqlDialect().supportsBatchMode() && this.sqlgGraph.tx().isInBatchMode() &&
                         !this.sqlgGraph.tx().getBatchManager().vertexIsCached(this))) {
 
@@ -447,7 +444,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
 
             //Generate the columns to prevent 'ERROR: cached plan must not change result type" error'
             //This happens when the schema changes after the statement is prepared.
-            @SuppressWarnings("OptionalGetWithoutIsPresent")
             VertexLabel vertexLabel = this.sqlgGraph.getTopology().getSchema(this.schema).orElseThrow(() -> new IllegalStateException(String.format("Schema %s not found", this.schema))).getVertexLabel(this.table).orElseThrow(() -> new IllegalStateException(String.format("VertexLabel %s not found", this.table)));
             StringBuilder sql = new StringBuilder("SELECT\n\t");
             sql.append(this.sqlgGraph.getSqlDialect().maybeWrapInQoutes("ID"));

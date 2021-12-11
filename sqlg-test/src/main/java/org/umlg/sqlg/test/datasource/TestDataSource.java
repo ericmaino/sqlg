@@ -1,8 +1,8 @@
 package org.umlg.sqlg.test.datasource;
 
-import org.apache.commons.configuration.Configuration;
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.commons.configuration2.Configuration;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.junit.*;
 import org.umlg.sqlg.sql.dialect.SqlDialect;
 import org.umlg.sqlg.structure.SqlgGraph;
@@ -27,7 +27,8 @@ public class TestDataSource {
     @Before
     public void before() throws ConfigurationException {
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
-        this.configuration = new PropertiesConfiguration(sqlProperties);
+        Configurations configs = new Configurations();
+        configuration = configs.properties(sqlProperties);
         if (!this.configuration.containsKey("jdbc.url")) {
             throw new IllegalArgumentException(String.format("SqlGraph configuration requires that the %s be set", "jdbc.url"));
         }
@@ -50,8 +51,11 @@ public class TestDataSource {
         for (int i = 0; i < 100; i++) {
             Assume.assumeTrue(this.configuration.getString("jdbc.url").contains("postgresql"));
             try {
-                Configuration readOnlyConfiguration = new PropertiesConfiguration("sqlg.readonly.properties");
-                try (SqlgGraph ignored = SqlgGraph.open(readOnlyConfiguration)) {
+//                Configuration readOnlyConfiguration = new PropertiesConfiguration("sqlg.readonly.properties");
+
+                Configurations readOnlyConfiguration = new Configurations();
+                configuration = readOnlyConfiguration.properties("sqlg.readonly.properties");
+                try (SqlgGraph ignored = SqlgGraph.open(configuration)) {
                     Assert.fail("user is readOnly, should not be able to start up on an empty graph.");
                 }
             } catch (RuntimeException e) {
@@ -65,7 +69,7 @@ public class TestDataSource {
         //C3P0 has 3 helper threads, looks like they hang around after closing the datasource. going with 7 for good measure.
 
         //Setting the dataSource = null in C3P0DataSource.close(), looks like the count is 0 now.
-        Assert.assertTrue(String.format("Expected count < 7, found %d",  count), count < 9);
+        Assert.assertTrue(String.format("Expected count < 12, found %d",  count), count < 12);
     }
 
     private int countConnections() {

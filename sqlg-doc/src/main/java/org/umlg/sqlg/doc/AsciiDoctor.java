@@ -23,7 +23,8 @@ public class AsciiDoctor {
     }
 
     private void createDocs() {
-        String version = "2.0.0-SNAPSHOT";
+//        String version = "2.0.1";
+        String version = "2.1.5";
         Asciidoctor asciidoctor = create();
         try {
             File file = new File("sqlg-doc/docs/" + version + "/sqlg.adoc");
@@ -61,8 +62,8 @@ public class AsciiDoctor {
 
         @Override
         public String process(Document document) {
-            return "<script src=\"tocbot.js\"></script>\n" +
-                    "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/tocbot/4.1.1/tocbot.css\">\n" +
+            return "<script src=\"tocbot.min.js\"></script>\n" +
+                    "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/tocbot/4.11.1/tocbot.css\">\n" +
                     "<script>\n" +
                     "    var oldtoc = document.getElementById('toctitle').nextElementSibling;\n" +
                     "    var newtoc = document.createElement('div');\n" +

@@ -1,8 +1,9 @@
 package org.umlg.sqlg.test;
 
-import org.apache.commons.configuration.Configuration;
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.commons.configuration2.Configuration;
+import org.apache.commons.configuration2.PropertiesConfiguration;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.lang3.time.StopWatch;
 import org.apache.log4j.Level;
 import org.apache.tinkerpop.gremlin.AbstractGremlinTest;
@@ -30,6 +31,7 @@ import org.umlg.sqlg.step.SqlgGraphStep;
 import org.umlg.sqlg.step.SqlgStep;
 import org.umlg.sqlg.step.SqlgVertexStep;
 import org.umlg.sqlg.strategy.SqlgSqlExecutor;
+import org.umlg.sqlg.structure.SqlgDataSource;
 import org.umlg.sqlg.structure.SqlgGraph;
 import org.umlg.sqlg.util.SqlgUtil;
 
@@ -82,7 +84,8 @@ public abstract class BaseTest {
     public static void beforeClass() {
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
         try {
-            configuration = new PropertiesConfiguration(sqlProperties);
+            Configurations configs = new Configurations();
+            configuration = configs.properties(sqlProperties);
             if (!configuration.containsKey("jdbc.url")) {
                 throw new IllegalArgumentException(String.format("SqlGraph configuration requires that the %s be set", "jdbc.url"));
             }
@@ -110,10 +113,10 @@ public abstract class BaseTest {
             assertEquals(this.sqlgGraph.getBuildVersion(), this.sqlgGraph1.getBuildVersion());
         }
         stopWatch.stop();
-        logger.info("Startup time for test = " + stopWatch.toString());
+        logger.info("Startup time for test = " + stopWatch);
     }
 
-    private void grantReadOnlyUserPrivileges() {
+    protected void grantReadOnlyUserPrivileges() {
         this.sqlgGraph.getSqlDialect().grantReadOnlyUserPrivilegesToSqlgSchemas(this.sqlgGraph);
         this.sqlgGraph.tx().commit();
     }
@@ -137,27 +140,27 @@ public abstract class BaseTest {
     }
 
     protected static boolean isPostgres() {
-        return configuration.getString("jdbc.url").contains("postgresql");
+        return SqlgDataSource.isPostgres(configuration);
     }
 
     protected static boolean isMsSqlServer() {
-        return configuration.getString("jdbc.url").contains("sqlserver");
+        return SqlgDataSource.isMsSqlServer(configuration);
     }
 
     protected static boolean isHsqldb() {
-        return configuration.getString("jdbc.url").contains("hsqldb");
+        return SqlgDataSource.isHsqldb(configuration);
     }
 
     protected static boolean isH2() {
-        return configuration.getString("jdbc.url").contains("h2");
+        return SqlgDataSource.isH2(configuration);
     }
 
     protected static boolean isMariaDb() {
-        return configuration.getString("jdbc.url").contains("mariadb");
+        return SqlgDataSource.isMariaDb(configuration);
     }
 
     protected static boolean isMysql() {
-        return configuration.getString("jdbc.url").contains("mysql");
+        return SqlgDataSource.isMysql(configuration);
     }
 
     /**
@@ -194,7 +197,6 @@ public abstract class BaseTest {
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("E_vertex_index") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("E_edge_index") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("E_index_property") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
-        result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("E_globalUniqueIndex_property") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
 
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("V_graph") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("V_log") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
@@ -204,7 +206,6 @@ public abstract class BaseTest {
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("V_partition") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("V_property") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
         result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("V_index") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
-        result.add("DROP TABLE " + sqlgGraph.getSqlDialect().maybeWrapInQoutes("sqlg_schema") + "." + sqlgGraph.getSqlDialect().maybeWrapInQoutes("V_globalUniqueIndex") + (sqlgGraph.getSqlDialect().needsSemicolon() ? ";" : ""));
 
         result.add(sqlgGraph.getSqlDialect().dropSchemaStatement("sqlg_schema"));
 
@@ -353,8 +354,8 @@ public abstract class BaseTest {
     }
 
     private static void assertToyGraph(final Graph g1, final boolean assertDouble, final boolean lossyForId, final boolean assertSpecificLabel) {
-        assertEquals(new Long(6), g1.traversal().V().count().next());
-        assertEquals(new Long(6), g1.traversal().E().count().next());
+        assertEquals(Long.valueOf(6), g1.traversal().V().count().next());
+        assertEquals(Long.valueOf(6), g1.traversal().E().count().next());
 
         final Vertex v1 = g1.traversal().V().has("name", "marko").next();
         assertEquals(29, v1.<Integer>value("age").intValue());
@@ -600,7 +601,7 @@ public abstract class BaseTest {
             Assert.assertTrue("Expected SqlgVertexStep, found " + step.getClass().getName(), step instanceof SqlgVertexStep);
         }
         SqlgStep sqlgStep = (SqlgStep) step;
-        Assert.assertEquals("isEagerLoad should be " + isEagerLoad, isEagerLoad, sqlgStep.isEargerLoad());
+        Assert.assertEquals("isEagerLoad should be " + isEagerLoad, isEagerLoad, sqlgStep.isEagerLoad());
         Assert.assertEquals("isForMultipleQueries should be " + isForMultipleQueries, isForMultipleQueries, sqlgStep.isForMultipleQueries());
         Assert.assertEquals("comparatorsNotOnDb should be " + comparatorsNotOnDb, comparatorsNotOnDb, sqlgStep.getReplacedSteps().stream().allMatch(r -> r.getDbComparators().isEmpty()));
         if (!rangeOnDb) {
@@ -621,7 +622,7 @@ public abstract class BaseTest {
             Assert.assertTrue("Expected SqlgVertexStep, found " + step.getClass().getName(), step instanceof SqlgVertexStep);
         }
         SqlgStep sqlgStep = (SqlgStep) step;
-        Assert.assertEquals("isEagerLoad should be " + isEagerLoad, isEagerLoad, sqlgStep.isEargerLoad());
+        Assert.assertEquals("isEagerLoad should be " + isEagerLoad, isEagerLoad, sqlgStep.isEagerLoad());
         Assert.assertEquals("isForMultipleQueries should be " + isForMultipleQueries, isForMultipleQueries, sqlgStep.isForMultipleQueries());
         Assert.assertEquals("comparatorsNotOnDb should be " + comparatorsNotOnDb, comparatorsNotOnDb, sqlgStep.getReplacedSteps().stream().allMatch(r -> r.getDbComparators().isEmpty()));
     }
@@ -633,7 +634,7 @@ public abstract class BaseTest {
             Assert.assertTrue("Expected SqlgVertexStep, found " + step.getClass().getName(), step instanceof SqlgVertexStep);
         }
         SqlgStep sqlgStep = (SqlgStep) step;
-        Assert.assertEquals("isEagerLoad should be " + isEagerLoad, isEagerLoad, sqlgStep.isEargerLoad());
+        Assert.assertEquals("isEagerLoad should be " + isEagerLoad, isEagerLoad, sqlgStep.isEagerLoad());
         Assert.assertEquals("comparatorsNotOnDb should be " + comparatorsNotOnDb, comparatorsNotOnDb, sqlgStep.getReplacedSteps().stream().allMatch(r -> r.getDbComparators().isEmpty()));
     }
 
@@ -648,5 +649,18 @@ public abstract class BaseTest {
             mapList.add(map);
         }
         return mapList;
+    }
+
+    protected <T> void checkOrderedResults(final List<T> expectedResults, final Traversal<?, T> traversal) {
+        final List<T> results = traversal.toList();
+        assertFalse(traversal.hasNext());
+        if (expectedResults.size() != results.size()) {
+//            logger.error("Expected results: " + expectedResults);
+//            logger.error("Actual results:   " + results);
+            assertEquals("Checking result size", expectedResults.size(), results.size());
+        }
+        for (int i = 0; i < expectedResults.size(); i++) {
+            assertEquals(expectedResults.get(i), results.get(i));
+        }
     }
 }

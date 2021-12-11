@@ -92,11 +92,11 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             case LOCALDATE_ARRAY_ORDINAL:
                 return toValuesArray(true, getArrayDriverType(propertyType), value).toString();
             case LOCALDATETIME_ORDINAL:
-                return "TIMESTAMP '" + Timestamp.valueOf((LocalDateTime) value).toString() + "'";
+                return "TIMESTAMP '" + Timestamp.valueOf((LocalDateTime) value) + "'";
             case LOCALDATETIME_ARRAY_ORDINAL:
                 return toLocalDateTimeArray(true, getArrayDriverType(propertyType), value).toString();
             case LOCALTIME_ORDINAL:
-                return "TIME '" + Time.valueOf((LocalTime) value).toString() + "'";
+                return "TIME '" + Time.valueOf((LocalTime) value) + "'";
             case LOCALTIME_ARRAY_ORDINAL:
                 return toLocalTimeArray(true, getArrayDriverType(propertyType), value).toString();
             case JSON_ORDINAL:
@@ -150,7 +150,7 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             if (quote) {
                 sb.append("'");
             }
-            sb.append(Timestamp.valueOf(valueOfArray).toString());
+            sb.append(Timestamp.valueOf(valueOfArray));
             sb.append("+0:00");
             if (quote) {
                 sb.append("'");
@@ -176,7 +176,7 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             if (quote) {
                 sb.append("'");
             }
-            sb.append(Time.valueOf(valueOfArray).toString());
+            sb.append(Time.valueOf(valueOfArray));
             sb.append("+0:00");
             if (quote) {
                 sb.append("'");
@@ -196,19 +196,22 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
 
     @Override
     public String existIndexQuery(SchemaTable schemaTable, String prefix, String indexName) {
-        StringBuilder sb = new StringBuilder("SELECT * FROM INFORMATION_SCHEMA.SYSTEM_INDEXINFO WHERE TABLE_SCHEM = '");
-        sb.append(schemaTable.getSchema());
-        sb.append("' AND  TABLE_NAME = '");
-        sb.append(prefix);
-        sb.append(schemaTable.getTable());
-        sb.append("' AND INDEX_NAME = '");
-        sb.append(indexName);
-        sb.append("'");
-        return sb.toString();
+        return "SELECT * FROM INFORMATION_SCHEMA.SYSTEM_INDEXINFO WHERE TABLE_SCHEM = '" + schemaTable.getSchema() +
+                "' AND  TABLE_NAME = '" +
+                prefix +
+                schemaTable.getTable() +
+                "' AND INDEX_NAME = '" +
+                indexName +
+                "'";
     }
 
     @Override
     public boolean supportsTransactionalSchema() {
+        return false;
+    }
+
+    @Override
+    public boolean supportsIfExists() {
         return false;
     }
 
@@ -361,11 +364,11 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             case LOCALDATE_ORDINAL:
                 return new String[]{"DATE"};
             case LOCALDATETIME_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE"};
+                return new String[]{"TIMESTAMP"};
             case ZONEDDATETIME_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE", "LONGVARCHAR"};
+                return new String[]{"TIMESTAMP", "LONGVARCHAR"};
             case LOCALTIME_ORDINAL:
-                return new String[]{"TIME WITH TIME ZONE"};
+                return new String[]{"TIME"};
             case PERIOD_ORDINAL:
                 return new String[]{"INTEGER", "INTEGER", "INTEGER"};
             case DURATION_ORDINAL:
@@ -413,13 +416,13 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             case STRING_ARRAY_ORDINAL:
                 return new String[]{"LONGVARCHAR ARRAY DEFAULT ARRAY[]"};
             case LOCALDATETIME_ARRAY_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE ARRAY DEFAULT ARRAY[]"};
+                return new String[]{"TIMESTAMP ARRAY DEFAULT ARRAY[]"};
             case LOCALDATE_ARRAY_ORDINAL:
                 return new String[]{"DATE ARRAY DEFAULT ARRAY[]"};
             case LOCALTIME_ARRAY_ORDINAL:
-                return new String[]{"TIME WITH TIME ZONE ARRAY DEFAULT ARRAY[]"};
+                return new String[]{"TIME ARRAY DEFAULT ARRAY[]"};
             case ZONEDDATETIME_ARRAY_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE ARRAY DEFAULT ARRAY[]", "LONGVARCHAR ARRAY DEFAULT ARRAY[]"};
+                return new String[]{"TIMESTAMP ARRAY DEFAULT ARRAY[]", "LONGVARCHAR ARRAY DEFAULT ARRAY[]"};
             case DURATION_ARRAY_ORDINAL:
                 return new String[]{"BIGINT ARRAY DEFAULT ARRAY[]", "INTEGER ARRAY DEFAULT ARRAY[]"};
             case PERIOD_ARRAY_ORDINAL:
@@ -528,7 +531,7 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
                 return PropertyType.DOUBLE;
             case Types.VARCHAR:
                 return PropertyType.STRING;
-            case Types.TIMESTAMP_WITH_TIMEZONE:
+            case Types.TIMESTAMP:
                 return PropertyType.LOCALDATETIME;
             case Types.DATE:
                 return PropertyType.LOCALDATE;
@@ -558,9 +561,9 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
                 return PropertyType.DOUBLE_ARRAY;
             case "DATE ARRAY":
                 return PropertyType.LOCALDATE_ARRAY;
-            case "TIME WITH TIME ZONE ARRAY":
+            case "TIME ARRAY":
                 return PropertyType.LOCALTIME_ARRAY;
-            case "TIMESTAMP WITH TIME ZONE ARRAY":
+            case "TIMESTAMP ARRAY":
                 //need to check the next column to know if its a LocalDateTime or ZonedDateTime array
                 Triple<String, Integer, String> metaData = metaDataIter.next();
                 metaDataIter.previous();
@@ -747,17 +750,17 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
 
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_graph\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
-                "\"updatedOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
+                "\"updatedOn\" TIMESTAMP, " +
                 "\"version\" LONGVARCHAR, " +
                 "\"dbVersion\" LONGVARCHAR);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_schema\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" LONGVARCHAR);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_vertex\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" LONGVARCHAR, " +
                 "\"schemaVertex\" LONGVARCHAR," +
                 "\"partitionType\" LONGVARCHAR, " +
@@ -765,34 +768,32 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
                 "\"shardCount\" INTEGER);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_edge\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" LONGVARCHAR, " +
                 "\"partitionType\" LONGVARCHAR, " +
                 "\"partitionExpression\" LONGVARCHAR, " +
                 "\"shardCount\" INTEGER);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_partition\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" LONGVARCHAR, " +
                 "\"from\" LONGVARCHAR, " +
                 "\"to\" LONGVARCHAR, " +
                 "\"in\" LONGVARCHAR, " +
+                "\"modulus\" INTEGER, " +
+                "\"remainder\" INTEGER, " +
                 "\"partitionType\" LONGVARCHAR, " +
                 "\"partitionExpression\" LONGVARCHAR);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_property\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" LONGVARCHAR, " +
                 "\"type\" LONGVARCHAR);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_index\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" LONGVARCHAR, " +
                 "\"index_type\" LONGVARCHAR);");
-        result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_globalUniqueIndex\" (" +
-                "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
-                "\"name\" LONGVARCHAR);");
 
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"E_schema_vertex\"(" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
@@ -909,15 +910,9 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
                 "FOREIGN KEY (\"sqlg_schema.property__I\") REFERENCES \"sqlg_schema\".\"V_property\" (\"ID\") ON DELETE CASCADE, " +
                 "FOREIGN KEY (\"sqlg_schema.index__O\") REFERENCES \"sqlg_schema\".\"V_index\" (\"ID\") ON DELETE CASCADE);");
 
-        result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"E_globalUniqueIndex_property\"(" +
-                "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"sqlg_schema.property__I\" BIGINT, " +
-                "\"sqlg_schema.globalUniqueIndex__O\" BIGINT, " +
-                "FOREIGN KEY (\"sqlg_schema.property__I\") REFERENCES \"sqlg_schema\".\"V_property\" (\"ID\") ON DELETE CASCADE, " +
-                "FOREIGN KEY (\"sqlg_schema.globalUniqueIndex__O\") REFERENCES \"sqlg_schema\".\"V_globalUniqueIndex\" (\"ID\") ON DELETE CASCADE);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_log\" (" +
                 "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                "\"timestamp\" TIMESTAMP WITH TIME ZONE, " +
+                "\"timestamp\" TIMESTAMP, " +
                 "\"pid\" INTEGER, " +
                 "\"log\" LONGVARCHAR);");
 
@@ -1173,7 +1168,7 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
                 "ALTER TABLE \"sqlg_schema\".\"V_edge\" ADD COLUMN \"shardCount\" INTEGER;",
                 "CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_partition\" (" +
                         "\"ID\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, " +
-                        "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                        "\"createdOn\" TIMESTAMP, " +
                         "\"name\" LONGVARCHAR, " +
                         "\"from\" LONGVARCHAR, " +
                         "\"to\" LONGVARCHAR, " +
@@ -1242,6 +1237,14 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
     }
 
     @Override
+    public List<String> addHashPartitionColumns() {
+        return List.of(
+                "ALTER TABLE \"sqlg_schema\".\"V_partition\" ADD COLUMN \"modulus\" INTEGER;",
+                "ALTER TABLE \"sqlg_schema\".\"V_partition\" ADD COLUMN \"remainder\" INTEGER;"
+        );
+    }
+
+    @Override
     public String addDbVersionToGraph(DatabaseMetaData metadata) {
         try {
             return "ALTER TABLE \"sqlg_schema\".\"V_graph\" ADD COLUMN \"dbVersion\" LONGVARCHAR DEFAULT '" + metadata.getDatabaseProductVersion() + "';";
@@ -1264,7 +1267,6 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"V_partition\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"V_property\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"V_index\" TO READ_ONLY");
-            statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"V_globalUniqueIndex\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_schema_vertex\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_in_edges\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_out_edges\" TO READ_ONLY");
@@ -1282,10 +1284,54 @@ public class HsqldbDialect extends BaseSqlDialect implements SqlBulkDialect {
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_vertex_index\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_edge_index\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_index_property\" TO READ_ONLY");
-            statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"E_globalUniqueIndex_property\" TO READ_ONLY");
             statement.execute("GRANT SELECT ON TABLE \"sqlg_schema\".\"V_log\" TO READ_ONLY");
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Override
+    public boolean isTimestampz(String typeName) {
+        String localTypeName = typeName.toLowerCase();
+        switch (localTypeName) {
+            case "timestamp with time zone":
+            case "timestamp with time zone array":
+            case "time with time zone":
+            case "time with time zone array":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    @Override
+    public boolean canUserCreateSchemas(SqlgGraph sqlgGraph) {
+        //this.deadlocks
+//        Connection connection = sqlgGraph.tx().getConnection();
+//        String testSchema = "TESTTHISANDTHAT";
+//        try (Statement s = connection.createStatement()) {
+//            s.execute(createSchemaStatement(testSchema));
+//            s.execute("DROP SCHEMA " + maybeWrapInQoutes(testSchema));
+//            return true;
+//        } catch (SQLException e) {
+//            return false;
+//        }
+        return true;
+    }
+
+    @Override
+    public String renameColumn(String schema, String table, String column, String newName) {
+        StringBuilder sql = new StringBuilder("ALTER TABLE ");
+        sql.append(maybeWrapInQoutes(schema));
+        sql.append(".");
+        sql.append(maybeWrapInQoutes(table));
+        sql.append(" ALTER COLUMN ");
+        sql.append(maybeWrapInQoutes(column));
+        sql.append(" RENAME TO ");
+        sql.append(maybeWrapInQoutes(newName));
+        if (needsSemicolon()) {
+            sql.append(";");
+        }
+        return sql.toString();
     }
 }

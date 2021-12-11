@@ -3,22 +3,111 @@ package org.umlg.sqlg.test.gremlincompile;
 import org.apache.tinkerpop.gremlin.process.traversal.Path;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.structure.*;
 import org.junit.Assert;
 import org.junit.Test;
 import org.umlg.sqlg.test.BaseTest;
 
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.function.Predicate;
 
 /**
  * Date: 2016/04/14
  * Time: 6:36 PM
  */
+@SuppressWarnings("DuplicatedCode")
 public class TestGremlinOptional extends BaseTest {
+
+    @Test
+    public void testAnotherOptionalWithSelect() {
+        Vertex activityInstance = this.sqlgGraph.addVertex(T.label, "ActivityInstance");
+        Vertex activityRecord1 = this.sqlgGraph.addVertex(T.label, "ActivityRecord");
+        Vertex activityRecord2 = this.sqlgGraph.addVertex(T.label, "ActivityRecord");
+        Vertex userRecord = this.sqlgGraph.addVertex(T.label, "User");
+        activityInstance.addEdge("a_b", activityRecord1);
+        activityInstance.addEdge("a_b", activityRecord2);
+        userRecord.addEdge("b_c", activityRecord1);
+        this.sqlgGraph.tx().commit();
+
+        List<Path> paths = this.sqlgGraph.traversal().V().hasId(activityInstance.id())
+                .out("a_b")
+                .optional(
+                        __.in("b_c")
+                )
+                .path()
+                .toList();
+        Assert.assertEquals(2, paths.size());
+        for (Path path : paths) {
+            Vertex activityInstanceVertex = path.get(0);
+            Vertex activityRecordVertex = path.get(1);
+            if (path.size() == 3) {
+                Vertex userVertex = path.get(2);
+                System.out.println(userVertex);
+            }
+        }
+    }
+
+    @Test
+    public void testOptionalWithSelect() {
+        Vertex car1 = this.sqlgGraph.addVertex(T.label, "Car");
+        Vertex car2 = this.sqlgGraph.addVertex(T.label, "Car");
+        Vertex person = this.sqlgGraph.addVertex(T.label, "Person");
+        car1.addEdge("passenger", person);
+        this.sqlgGraph.tx().commit();
+        List<Path> paths = this.sqlgGraph.traversal().V().hasLabel("Car").as("cars")
+                .optional(
+                        __.out("passenger").as("passenger")
+                )
+                .path()
+                .toList();
+        Assert.assertEquals(2, paths.size());
+        List<Predicate<Path>> pathsToAssert = Arrays.asList(
+                p -> p.size() == 2 && p.get(0).equals(car1) && p.get(1).equals(person),
+                p -> p.size() == 1 && p.get(0).equals(car2)
+        );
+        for (Predicate<Path> pathPredicate : pathsToAssert) {
+            Optional<Path> path = paths.stream().filter(pathPredicate).findAny();
+            Assert.assertTrue(path.isPresent());
+            Assert.assertTrue(paths.remove(path.get()));
+        }
+        Assert.assertTrue(paths.isEmpty());
+        List<Map<String, Vertex>> result = sqlgGraph.traversal().V().hasLabel("Car").as("cars")
+                .optional(
+                        __.out("passenger").as("passenger")
+                )
+                .<Vertex>select("cars", "passenger")
+                .toList();
+        Assert.assertEquals(1, result.size());
+        Map<String, Vertex> map = result.get(0);
+        Assert.assertEquals(2, map.size());
+        Assert.assertTrue(map.containsKey("cars"));
+        Assert.assertEquals(car1, map.get("cars"));
+        Assert.assertTrue(map.containsKey("passenger"));
+        Assert.assertEquals(person, map.get("passenger"));
+    }
+
+    @Test
+    public void testMissingEdgeLabel() {
+        GraphTraversalSource g = this.sqlgGraph.traversal();
+        Vertex a = g.addV("A").next();
+        Vertex b = g.addV("B").next();
+        Vertex c = g.addV("C").next();
+        g.addV("D").next();
+        a.addEdge("a2b", b);
+        a.addEdge("a2c", c);
+        this.sqlgGraph.tx().commit();
+        List<Path> paths= g.V().hasLabel("A").as("a")
+                .optional(__.out("a2b"))
+                .select("a")
+                .optional(__.out("a2c").out("c2d"))
+                .path()
+                .toList();
+        Assert.assertEquals(1, paths.size());
+        Path p = paths.get(0);
+        Assert.assertTrue(p.size() == 3 && p.get(0).equals(a) && p.get(1).equals(b) && p.get(2).equals(a));
+    }
 
     @Test
     public void testOptionalWithNestedOptionalAndRepeat() {
@@ -295,7 +384,7 @@ public class TestGremlinOptional extends BaseTest {
         List<Path> paths = traversal.toList();
         Assert.assertEquals(2, traversal.getSteps().size());
         Assert.assertEquals(1, paths.size());
-        List<Predicate<Path>> pathsToAssert = Arrays.asList(
+        List<Predicate<Path>> pathsToAssert = Collections.singletonList(
                 p -> p.size() == 2 && p.get(0).equals(a1) && p.get(1).equals(b1)
         );
         for (Predicate<Path> pathPredicate : pathsToAssert) {
@@ -315,7 +404,7 @@ public class TestGremlinOptional extends BaseTest {
         paths = traversal1.toList();
         Assert.assertEquals(2, traversal1.getSteps().size());
         Assert.assertEquals(1, paths.size());
-        pathsToAssert = Arrays.asList(
+        pathsToAssert = Collections.singletonList(
                 p -> p.size() == 1 && p.get(0).equals(a1)
         );
         for (Predicate<Path> pathPredicate : pathsToAssert) {
@@ -425,7 +514,7 @@ public class TestGremlinOptional extends BaseTest {
                 .toList();
         Assert.assertEquals(1, paths.size());
 
-        List<Predicate<Path>> pathsToAssert = Arrays.asList(
+        List<Predicate<Path>> pathsToAssert = Collections.singletonList(
                 p -> p.size() == 1 && p.get(0).equals(vadasVertex)
         );
         for (Predicate<Path> pathPredicate : pathsToAssert) {
@@ -646,7 +735,7 @@ public class TestGremlinOptional extends BaseTest {
         Assert.assertEquals(2, traversal.getSteps().size());
         Assert.assertEquals(1, paths.size());
 
-        List<Predicate<Path>> pathsToAssert = Arrays.asList(
+        List<Predicate<Path>> pathsToAssert = Collections.singletonList(
                 p -> p.size() == 3 && p.get(0).equals(a1) && p.get(1).equals(e1) && p.get(2).equals(a2)
         );
         for (Predicate<Path> pathPredicate : pathsToAssert) {

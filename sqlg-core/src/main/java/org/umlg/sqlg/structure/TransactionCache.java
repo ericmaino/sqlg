@@ -16,7 +16,7 @@ class TransactionCache {
     private final Connection connection;
     private final Map<ElementPropertyRollback, Object> elementPropertyRollbackFunctions = new WeakHashMap<>();
     private BatchManager batchManager;
-    private boolean cacheVertices = false;
+    private final boolean cacheVertices;
     private final Map<RecordId, SqlgVertex> vertexCache = new WeakHashMap<>();
     private boolean writeTransaction;
 
@@ -88,7 +88,9 @@ class TransactionCache {
             this.vertexCache.clear();
         }
         try {
-            this.connection.close();
+            if (!this.connection.isClosed()) {
+                this.connection.close();
+            }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }

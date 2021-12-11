@@ -7,7 +7,9 @@ import org.umlg.sqlg.structure.PropertyType;
 import org.umlg.sqlg.structure.SchemaTable;
 import org.umlg.sqlg.structure.SqlgExceptions;
 import org.umlg.sqlg.structure.SqlgGraph;
+import org.umlg.sqlg.structure.topology.AbstractLabel;
 import org.umlg.sqlg.structure.topology.Topology;
+import org.umlg.sqlg.structure.topology.VertexLabel;
 import org.umlg.sqlg.util.SqlgUtil;
 
 import java.sql.*;
@@ -15,6 +17,8 @@ import java.time.*;
 import java.util.*;
 
 import static org.umlg.sqlg.structure.PropertyType.*;
+import static org.umlg.sqlg.structure.topology.Topology.EDGE_PREFIX;
+import static org.umlg.sqlg.structure.topology.Topology.VERTEX_PREFIX;
 
 /**
  * @author Pieter Martin (https://github.com/pietermartin)
@@ -633,6 +637,8 @@ public class MariadbDialect extends BaseSqlDialect {
                 "`from` TEXT, " +
                 "`to` TEXT, " +
                 "`in` TEXT, " +
+                "`modulus` INTEGER, " +
+                "`remainder` INTEGER, " +
                 "`partitionType` TEXT, " +
                 "`partitionExpression` TEXT);");
         result.add("CREATE TABLE IF NOT EXISTS `sqlg_schema`.`V_property` (" +
@@ -645,10 +651,6 @@ public class MariadbDialect extends BaseSqlDialect {
                 "`createdOn` DATETIME, " +
                 "`name` TEXT, " +
                 "`index_type` TEXT);");
-        result.add("CREATE TABLE IF NOT EXISTS `sqlg_schema`.`V_globalUniqueIndex` (" +
-                "`ID` SERIAL PRIMARY KEY, " +
-                "`createdOn` DATETIME, " +
-                "`name` TEXT);");
 
         result.add("CREATE TABLE IF NOT EXISTS `sqlg_schema`.`E_schema_vertex`(" +
                 "`ID` SERIAL PRIMARY KEY, " +
@@ -778,14 +780,6 @@ public class MariadbDialect extends BaseSqlDialect {
                 "`sequence` INTEGER, " +
                 "FOREIGN KEY (`sqlg_schema.property__I`) REFERENCES `sqlg_schema`.`V_property` (`ID`), " +
                 "FOREIGN KEY (`sqlg_schema.index__O`) REFERENCES `sqlg_schema`.`V_index` (`ID`)" +
-                ");");
-
-        result.add("CREATE TABLE IF NOT EXISTS `sqlg_schema`.`E_globalUniqueIndex_property`(" +
-                "`ID` SERIAL PRIMARY KEY, " +
-                "`sqlg_schema.property__I` BIGINT UNSIGNED, " +
-                "`sqlg_schema.globalUniqueIndex__O` BIGINT UNSIGNED, " +
-                "FOREIGN KEY (`sqlg_schema.property__I`) REFERENCES `sqlg_schema`.`V_property` (`ID`), " +
-                "FOREIGN KEY (`sqlg_schema.globalUniqueIndex__O`) REFERENCES `sqlg_schema`.`V_globalUniqueIndex` (`ID`)" +
                 ");");
 
         result.add("CREATE TABLE IF NOT EXISTS `sqlg_schema`.`V_log`(`ID` SERIAL PRIMARY KEY, `timestamp` DATETIME, `pid` INTEGER, `log` TEXT);");
@@ -1078,6 +1072,14 @@ public class MariadbDialect extends BaseSqlDialect {
         );
     }
 
+    @Override
+    public List<String> addHashPartitionColumns() {
+        return List.of(
+                "ALTER TABLE `sqlg_schema`.`V_partition` ADD COLUMN `modulus` INTEGER;",
+                "ALTER TABLE `sqlg_schema`.`V_partition` ADD COLUMN `remainder` INTEGER;"
+        );
+    }
+
     /**
      * Hardcoded the rows to return. MariaDB does nto support just an offset.
      *
@@ -1099,5 +1101,27 @@ public class MariadbDialect extends BaseSqlDialect {
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Override
+    public boolean isTimestampz(String typeName) {
+        //Maria db is not using timestamps with zones
+        return false;
+    }
+
+    @Override
+    public String dropIndex(SqlgGraph sqlgGraph, AbstractLabel parentLabel, String name) {
+        StringBuilder sql = new StringBuilder("DROP INDEX IF EXISTS ");
+        SqlDialect sqlDialect = sqlgGraph.getSqlDialect();
+        sql.append(sqlDialect.maybeWrapInQoutes(name));
+        sql.append(" ON ");
+        sql.append(sqlDialect.maybeWrapInQoutes(parentLabel.getSchema().getName()));
+        sql.append(".");
+        String prefix = parentLabel instanceof VertexLabel ? VERTEX_PREFIX : EDGE_PREFIX;
+        sql.append(sqlDialect.maybeWrapInQoutes(prefix + parentLabel.getName()));
+        if (sqlDialect.needsSemicolon()) {
+            sql.append(";");
+        }
+        return sql.toString();
     }
 }

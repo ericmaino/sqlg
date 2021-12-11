@@ -4,7 +4,6 @@ import com.google.common.base.Preconditions;
 import org.apache.commons.collections4.set.ListOrderedSet;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
-import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.umlg.sqlg.structure.BatchManager;
@@ -103,11 +102,6 @@ public class TopologyManager {
                         .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
                         .out(SQLG_SCHEMA_VERTEX_PROPERTIES_EDGE)
                         .drop().iterate();
-                traversalSource.V(vs)
-                        .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
-                        .out(SQLG_SCHEMA_VERTEX_PROPERTIES_EDGE)
-                        .inE(SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX_PROPERTY_EDGE)
-                        .drop().iterate();
 
                 traversalSource.V(vs)
                         .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
@@ -118,12 +112,7 @@ public class TopologyManager {
                         .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
                         .out(SQLG_SCHEMA_VERTEX_PROPERTIES_EDGE)
                         .drop().iterate();
-                traversalSource.V(vs)
-                        .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
-                        .out(SQLG_SCHEMA_OUT_EDGES_EDGE)
-                        .out(SQLG_SCHEMA_EDGE_PROPERTIES_EDGE)
-                        .inE(SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX_PROPERTY_EDGE)
-                        .drop().iterate();
+
                 traversalSource.V(vs)
                         .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
                         .out(SQLG_SCHEMA_OUT_EDGES_EDGE)
@@ -142,17 +131,6 @@ public class TopologyManager {
                         .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
                         .drop().iterate();
 
-                // delete global unique indices with no properties left
-                // TODO this doesn't work, to investigate?
-                /*traversalSource.V().hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX)
-            		.where(__.not(__.out(SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX_PROPERTY_EDGE)))
-            		.drop().iterate();*/
-                for (Vertex v : traversalSource.V().hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX)
-                        .toList()) {
-                    if (!v.edges(Direction.OUT, SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX_PROPERTY_EDGE).hasNext()) {
-                        traversalSource.V(v).drop().iterate();
-                    }
-                }
                 traversalSource.V(vs)
                         .drop().iterate();
             }
@@ -166,7 +144,15 @@ public class TopologyManager {
         addVertexLabel(sqlgGraph, schema, tableName, columns, identifiers, PartitionType.NONE, null);
     }
 
-    public static void addVertexLabel(SqlgGraph sqlgGraph, String schema, String tableName, Map<String, PropertyType> columns, ListOrderedSet<String> identifiers, PartitionType partitionType, String partitionExpression) {
+    public static void addVertexLabel(
+            SqlgGraph sqlgGraph,
+            String schema,
+            String tableName,
+            Map<String, PropertyType> columns,
+            ListOrderedSet<String> identifiers,
+            PartitionType partitionType,
+            String partitionExpression) {
+
         BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
         try {
             //get the schema vertex
@@ -180,6 +166,7 @@ public class TopologyManager {
             Preconditions.checkState(!tableName.startsWith(VERTEX_PREFIX));
             Vertex schemaVertex = schemas.get(0);
 
+            sqlgGraph.tx().normalBatchModeOn();
             Vertex vertex;
             if (partitionExpression != null) {
                 Preconditions.checkState(partitionType != PartitionType.NONE, "If the partitionExpression is not null then the PartitionType may not be NONE. Found %s", partitionType.name());
@@ -218,6 +205,25 @@ public class TopologyManager {
                 }
 
             }
+            sqlgGraph.tx().flush();
+        } finally {
+            sqlgGraph.tx().batchMode(batchModeType);
+        }
+    }
+
+    public static void renameVertexLabel(SqlgGraph sqlgGraph, String schema, String oldVertexLabel, String newVertexLabel) {
+        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
+        try {
+            Preconditions.checkArgument(oldVertexLabel.startsWith(VERTEX_PREFIX), "prefixedTable must be for a vertex. prefixedTable = " + oldVertexLabel);
+            GraphTraversalSource traversalSource = sqlgGraph.topology();
+            List<Vertex> vertexLabelsToRename = traversalSource.V()
+                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_SCHEMA)
+                    .has(SQLG_SCHEMA_SCHEMA_NAME, schema)
+                    .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
+                    .has(SQLG_SCHEMA_VERTEX_LABEL_NAME, oldVertexLabel.substring(VERTEX_PREFIX.length()))
+                    .toList();
+            Preconditions.checkState(vertexLabelsToRename.size() == 1, String.format("Expected exactly one VertexLabel in %s.%s. Found %d", schema, oldVertexLabel, vertexLabelsToRename.size()));
+            vertexLabelsToRename.get(0).property(SQLG_SCHEMA_VERTEX_LABEL_NAME, newVertexLabel.substring(VERTEX_PREFIX.length()));
         } finally {
             sqlgGraph.tx().batchMode(batchModeType);
         }
@@ -361,6 +367,63 @@ public class TopologyManager {
         }
     }
 
+    public static void addVertexLabelPartition(
+            SqlgGraph sqlgGraph,
+            String schema,
+            String abstractLabel,
+            String name,
+            Integer modulus,
+            Integer remainder,
+            PartitionType partitionType,
+            String partitionExpression) {
+
+        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
+        try {
+            GraphTraversalSource traversalSource = sqlgGraph.topology();
+            List<Vertex> vertices = traversalSource.V()
+                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_SCHEMA)
+                    .has("name", schema)
+                    .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
+                    .has("name", abstractLabel)
+                    .toList();
+            if (vertices.size() == 0) {
+                throw new IllegalStateException("Found no vertex for " + schema + "." + abstractLabel);
+            }
+            if (vertices.size() > 1) {
+                throw new IllegalStateException("Found more than one vertex for " + schema + "." + abstractLabel);
+            }
+            Vertex vertex = vertices.get(0);
+
+            Vertex partition;
+            if (partitionExpression != null) {
+                Preconditions.checkState(!partitionType.isNone());
+                partition = sqlgGraph.addVertex(
+                        T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
+                        SQLG_SCHEMA_PARTITION_NAME, name,
+                        SQLG_SCHEMA_PARTITION_MODULUS, modulus,
+                        SQLG_SCHEMA_PARTITION_REMAINDER, remainder,
+                        SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
+                        SQLG_SCHEMA_PARTITION_PARTITION_EXPRESSION, partitionExpression,
+                        CREATED_ON, LocalDateTime.now()
+                );
+            } else {
+                Preconditions.checkState(partitionType.isNone());
+                partition = sqlgGraph.addVertex(
+                        T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
+                        SQLG_SCHEMA_PARTITION_NAME, name,
+                        SQLG_SCHEMA_PARTITION_MODULUS, modulus,
+                        SQLG_SCHEMA_PARTITION_REMAINDER, remainder,
+                        SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
+                        CREATED_ON, LocalDateTime.now()
+                );
+            }
+            vertex.addEdge(SQLG_SCHEMA_VERTEX_PARTITION_EDGE, partition);
+
+        } finally {
+            sqlgGraph.tx().batchMode(batchModeType);
+        }
+    }
+
     public static void addEdgeLabelPartition(
             SqlgGraph sqlgGraph,
             AbstractLabel abstractLabel,
@@ -460,6 +523,27 @@ public class TopologyManager {
 
     public static void addEdgeLabelPartition(
             SqlgGraph sqlgGraph,
+            AbstractLabel abstractLabel,
+            String name,
+            Integer modulus,
+            Integer remainder,
+            PartitionType partitionType,
+            String partitionExpression) {
+
+        addEdgeLabelPartition(
+                sqlgGraph,
+                abstractLabel.getSchema().getName(),
+                abstractLabel.getName(),
+                name,
+                modulus,
+                remainder,
+                partitionType,
+                partitionExpression
+        );
+    }
+
+    public static void addEdgeLabelPartition(
+            SqlgGraph sqlgGraph,
             String schema,
             String abstractLabel,
             String name,
@@ -502,6 +586,65 @@ public class TopologyManager {
                         T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
                         SQLG_SCHEMA_PARTITION_NAME, name,
                         SQLG_SCHEMA_PARTITION_IN, in,
+                        CREATED_ON, LocalDateTime.now(),
+                        SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name()
+                );
+            }
+            vertex.addEdge(SQLG_SCHEMA_EDGE_PARTITION_EDGE, property);
+
+        } finally {
+            sqlgGraph.tx().batchMode(batchModeType);
+        }
+
+    }
+
+    public static void addEdgeLabelPartition(
+            SqlgGraph sqlgGraph,
+            String schema,
+            String abstractLabel,
+            String name,
+            Integer modulus,
+            Integer remainder,
+            PartitionType partitionType,
+            String partitionExpression) {
+
+        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
+        try {
+            GraphTraversalSource traversalSource = sqlgGraph.topology();
+            List<Vertex> vertices = traversalSource.V()
+                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_SCHEMA)
+                    .has("name", schema)
+                    .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
+                    .out(SQLG_SCHEMA_OUT_EDGES_EDGE)
+                    .has("name", abstractLabel)
+                    .toList();
+            if (vertices.size() == 0) {
+                throw new IllegalStateException("Found no vertex for " + schema + "." + abstractLabel);
+            }
+            if (vertices.size() > 1) {
+                throw new IllegalStateException("Found more than one vertex for " + schema + "." + abstractLabel);
+            }
+            Vertex vertex = vertices.get(0);
+
+            Vertex property;
+            if (partitionExpression != null) {
+                Preconditions.checkState(!partitionType.isNone());
+                property = sqlgGraph.addVertex(
+                        T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
+                        SQLG_SCHEMA_PARTITION_NAME, name,
+                        SQLG_SCHEMA_PARTITION_MODULUS, modulus,
+                        SQLG_SCHEMA_PARTITION_REMAINDER, remainder,
+                        CREATED_ON, LocalDateTime.now(),
+                        SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
+                        SQLG_SCHEMA_PARTITION_PARTITION_EXPRESSION, partitionExpression
+                );
+            } else {
+                Preconditions.checkState(partitionType.isNone());
+                property = sqlgGraph.addVertex(
+                        T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
+                        SQLG_SCHEMA_PARTITION_NAME, name,
+                        SQLG_SCHEMA_PARTITION_MODULUS, modulus,
+                        SQLG_SCHEMA_PARTITION_REMAINDER, remainder,
                         CREATED_ON, LocalDateTime.now(),
                         SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name()
                 );
@@ -657,6 +800,41 @@ public class TopologyManager {
                         .iterate();
             }
 
+        } finally {
+            sqlgGraph.tx().batchMode(batchModeType);
+        }
+    }
+
+    public static void removeOutEdgeRole(SqlgGraph sqlgGraph, EdgeLabel edgeLabel, VertexLabel vertexLabel) {
+        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
+        try {
+            GraphTraversalSource traversalSource = sqlgGraph.topology();
+            String schema = edgeLabel.getSchema().getName();
+            traversalSource.V()
+                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_SCHEMA)
+                    .has(SQLG_SCHEMA_SCHEMA_NAME, vertexLabel.getSchema().getName())
+                    .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
+                    .has(SQLG_SCHEMA_VERTEX_LABEL_NAME, vertexLabel.getLabel())
+                    .outE(SQLG_SCHEMA_OUT_EDGES_EDGE)
+                    .drop()
+                    .iterate();
+        } finally {
+            sqlgGraph.tx().batchMode(batchModeType);
+        }
+    }
+
+    public static void removeInEdgeRole(SqlgGraph sqlgGraph, EdgeLabel edgeLabel, VertexLabel vertexLabel) {
+        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
+        try {
+            GraphTraversalSource traversalSource = sqlgGraph.topology();
+            traversalSource.V()
+                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_SCHEMA)
+                    .has(SQLG_SCHEMA_SCHEMA_NAME, vertexLabel.getSchema().getName())
+                    .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
+                    .has(SQLG_SCHEMA_VERTEX_LABEL_NAME, vertexLabel.getLabel())
+                    .outE(SQLG_SCHEMA_IN_EDGES_EDGE)
+                    .drop()
+                    .iterate();
         } finally {
             sqlgGraph.tx().batchMode(batchModeType);
         }
@@ -827,6 +1005,28 @@ public class TopologyManager {
 
     }
 
+    public static void renamePropertyColumn(SqlgGraph sqlgGraph, String schema, String prefixedTable, String column, String newName) {
+        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
+        try {
+            Preconditions.checkArgument(prefixedTable.startsWith(VERTEX_PREFIX), "prefixedTable must be for a vertex. prefixedTable = " + prefixedTable);
+            GraphTraversalSource traversalSource = sqlgGraph.topology();
+
+            List<Vertex> propertiesToRename = traversalSource.V()
+                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_SCHEMA)
+                    .has(SQLG_SCHEMA_SCHEMA_NAME, schema)
+                    .out(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
+                    .has(SQLG_SCHEMA_VERTEX_LABEL_NAME, prefixedTable.substring(VERTEX_PREFIX.length()))
+                    .out(SQLG_SCHEMA_VERTEX_PROPERTIES_EDGE)
+                    .has(SQLG_SCHEMA_PROPERTY_NAME, column)
+                    .toList();
+            Preconditions.checkState(propertiesToRename.size() == 1, String.format("Expected exactly one property in %s.%s.%s. Found %d", schema, propertiesToRename, column, propertiesToRename.size()));
+            propertiesToRename.get(0).property(SQLG_SCHEMA_PROPERTY_NAME, newName);
+
+        } finally {
+            sqlgGraph.tx().batchMode(batchModeType);
+        }
+    }
+
     public static void removeEdgeColumn(SqlgGraph sqlgGraph, String schema, String prefixedTable, String column) {
         BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
         try {
@@ -937,16 +1137,9 @@ public class TopologyManager {
                 traversalSource.V(v.id())
                         .out(abstractLabel instanceof VertexLabel ? SQLG_SCHEMA_VERTEX_INDEX_EDGE : SQLG_SCHEMA_EDGE_INDEX_EDGE)
                         .has(SQLG_SCHEMA_INDEX_NAME, index.getName())
-                        .out(SQLG_SCHEMA_INDEX_PROPERTY_EDGE)
-                        .drop()
-                        .iterate();
-                traversalSource.V(v.id())
-                        .out(abstractLabel instanceof VertexLabel ? SQLG_SCHEMA_VERTEX_INDEX_EDGE : SQLG_SCHEMA_EDGE_INDEX_EDGE)
-                        .has(SQLG_SCHEMA_INDEX_NAME, index.getName())
                         .drop()
                         .iterate();
             }
-
         } finally {
             sqlgGraph.tx().batchMode(batchModeType);
         }
@@ -1075,89 +1268,6 @@ public class TopologyManager {
         }
     }
 
-    static void addGlobalUniqueIndex(SqlgGraph sqlgGraph, String globalUniqueIndexName, Set<PropertyColumn> properties) {
-        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
-        try {
-            GraphTraversalSource traversalSource = sqlgGraph.topology();
-            List<Vertex> uniquePropertyConstraints = traversalSource.V()
-                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX)
-                    .has("name", globalUniqueIndexName)
-                    .toList();
-            if (uniquePropertyConstraints.size() > 0) {
-                throw new IllegalStateException("Unique property constraint with name already exists. name = " + globalUniqueIndexName);
-            }
-            Vertex globalUniquePropertyConstraint = sqlgGraph.addVertex(
-                    T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX,
-                    "name", globalUniqueIndexName,
-                    CREATED_ON, LocalDateTime.now()
-            );
-            for (PropertyColumn property : properties) {
-                String elementLabel = property.getParentLabel().getLabel();
-                List<Vertex> uniquePropertyConstraintProperty;
-                if (property.getParentLabel() instanceof VertexLabel) {
-                    uniquePropertyConstraintProperty = traversalSource.V()
-                            .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_VERTEX_LABEL)
-                            .has("name", elementLabel)
-                            .out(SQLG_SCHEMA_VERTEX_PROPERTIES_EDGE)
-                            .has("name", property.getName())
-                            .toList();
-                } else {
-                    Set<Vertex> edges = traversalSource.V()
-                            .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_EDGE_LABEL)
-                            .has("name", elementLabel)
-                            .as("a")
-                            .in(SQLG_SCHEMA_OUT_EDGES_EDGE)
-                            .in(SQLG_SCHEMA_SCHEMA_VERTEX_EDGE)
-                            .has("name", property.getParentLabel().getSchema().getName())
-                            .<Vertex>select("a")
-                            .toSet();
-                    if (edges.size() == 0) {
-                        throw new IllegalStateException(String.format("Found no edge for %s.%s", property.getParentLabel().getSchema().getName(), elementLabel));
-                    }
-                    if (edges.size() > 1) {
-                        throw new IllegalStateException(String.format("Found more than one edge for %s.%s", property.getParentLabel().getSchema().getName(), elementLabel));
-                    }
-                    Vertex edge = edges.iterator().next();
-                    uniquePropertyConstraintProperty = traversalSource.V(edge)
-                            .out(SQLG_SCHEMA_EDGE_PROPERTIES_EDGE)
-                            .has("name", property.getName())
-                            .toList();
-                }
-                if (uniquePropertyConstraintProperty.size() == 0) {
-                    throw new IllegalStateException(String.format("Found no Property for %s.%s.%s", property.getParentLabel().getSchema().getName(), property.getParentLabel().getLabel(), property.getName()));
-                }
-                Vertex propertyVertex = uniquePropertyConstraintProperty.get(0);
-                globalUniquePropertyConstraint.addEdge(SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX_PROPERTY_EDGE, propertyVertex);
-            }
-        } finally {
-            sqlgGraph.tx().batchMode(batchModeType);
-        }
-    }
-
-    static void removeGlobalUniqueIndex(SqlgGraph sqlgGraph, String globalUniqueIndexName) {
-        BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
-        try {
-            GraphTraversalSource traversalSource = sqlgGraph.topology();
-            List<Vertex> uniquePropertyConstraints = traversalSource.V()
-                    .hasLabel(SQLG_SCHEMA + "." + SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX)
-                    .has("name", globalUniqueIndexName)
-                    .toList();
-            if (uniquePropertyConstraints.size() > 0) {
-                traversalSource.V(uniquePropertyConstraints.get(0))
-                        .out(SQLG_SCHEMA_GLOBAL_UNIQUE_INDEX_PROPERTY_EDGE)
-                        .drop()
-                        .iterate();
-                traversalSource.V(uniquePropertyConstraints.get(0))
-                        .drop()
-                        .iterate();
-            }
-
-        } finally {
-            sqlgGraph.tx().batchMode(batchModeType);
-        }
-    }
-
-
     private static BatchManager.BatchModeType flushAndSetTxToNone(SqlgGraph sqlgGraph) {
         //topology elements can not be added in batch mode because on flushing the topology
         //needs to be queries and yet the elements are still in the cache.
@@ -1210,7 +1320,7 @@ public class TopologyManager {
      * Adds the partition to a partition. A new Vertex with label Partition is added and in linked to its parent with
      * the SQLG_SCHEMA_PARTITION_PARTITION_EDGE edge label.
      *
-     * @param sqlgGraph
+     * @param sqlgGraph The graph.
      */
     public static void addSubPartition(SqlgGraph sqlgGraph, Partition partition) {
         AbstractLabel abstractLabel = partition.getAbstractLabel();
@@ -1226,7 +1336,9 @@ public class TopologyManager {
                 partition.getPartitionExpression(),
                 partition.getFrom(),
                 partition.getTo(),
-                partition.getIn()
+                partition.getIn(),
+                partition.getModulus(),
+                partition.getRemainder()
         );
 
     }
@@ -1243,7 +1355,9 @@ public class TopologyManager {
             String partitionExpression,
             String from,
             String to,
-            String in) {
+            String in,
+            Integer modulus,
+            Integer remainder) {
 
         BatchManager.BatchModeType batchModeType = flushAndSetTxToNone(sqlgGraph);
         try {
@@ -1315,8 +1429,7 @@ public class TopologyManager {
                             SQLG_SCHEMA_PARTITION_PARTITION_EXPRESSION, partitionExpression,
                             CREATED_ON, LocalDateTime.now()
                     );
-                } else {
-                    Preconditions.checkState(in != null);
+                } else if (in != null) {
                     subPartition = sqlgGraph.addVertex(
                             T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
                             SQLG_SCHEMA_PARTITION_NAME, partitionName,
@@ -1325,6 +1438,19 @@ public class TopologyManager {
                             SQLG_SCHEMA_PARTITION_PARTITION_EXPRESSION, partitionExpression,
                             CREATED_ON, LocalDateTime.now()
                     );
+                } else {
+                    Preconditions.checkState(modulus > 0);
+                    Preconditions.checkState(remainder >= 0);
+                    subPartition = sqlgGraph.addVertex(
+                            T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
+                            SQLG_SCHEMA_PARTITION_NAME, partitionName,
+                            SQLG_SCHEMA_PARTITION_MODULUS, modulus,
+                            SQLG_SCHEMA_PARTITION_REMAINDER, remainder,
+                            SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
+                            SQLG_SCHEMA_PARTITION_PARTITION_EXPRESSION, partitionExpression,
+                            CREATED_ON, LocalDateTime.now()
+                    );
+
                 }
             } else {
                 if (from != null) {
@@ -1337,12 +1463,22 @@ public class TopologyManager {
                             SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
                             CREATED_ON, LocalDateTime.now()
                     );
-                } else {
-                    Preconditions.checkState(in != null);
+                } else if (in != null){
                     subPartition = sqlgGraph.addVertex(
                             T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
                             SQLG_SCHEMA_PARTITION_NAME, partitionName,
                             SQLG_SCHEMA_PARTITION_IN, in,
+                            SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
+                            CREATED_ON, LocalDateTime.now()
+                    );
+                } else {
+                    Preconditions.checkState(modulus > 0);
+                    Preconditions.checkState(remainder >= 0);
+                    subPartition = sqlgGraph.addVertex(
+                            T.label, SQLG_SCHEMA + "." + SQLG_SCHEMA_PARTITION,
+                            SQLG_SCHEMA_PARTITION_NAME, partitionName,
+                            SQLG_SCHEMA_PARTITION_MODULUS, modulus,
+                            SQLG_SCHEMA_PARTITION_REMAINDER, remainder,
                             SQLG_SCHEMA_PARTITION_PARTITION_TYPE, partitionType.name(),
                             CREATED_ON, LocalDateTime.now()
                     );

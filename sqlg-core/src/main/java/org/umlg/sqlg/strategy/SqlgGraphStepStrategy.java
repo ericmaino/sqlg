@@ -24,7 +24,7 @@ public class SqlgGraphStepStrategy extends AbstractTraversalStrategy<TraversalSt
 
     @Override
     public void apply(final Traversal.Admin<?, ?> traversal) {
-        if (!(traversal.getGraph().orElseThrow(IllegalStateException::new) instanceof SqlgGraph)) {
+        if (traversal.getGraph().isEmpty() || !(traversal.getGraph().orElseThrow(IllegalStateException::new) instanceof SqlgGraph)) {
             return;
         }
         if (!SqlgTraversalUtil.mayOptimize(traversal)) {
@@ -47,7 +47,10 @@ public class SqlgGraphStepStrategy extends AbstractTraversalStrategy<TraversalSt
 
     @Override
     public Set<Class<? extends OptimizationStrategy>> applyPrior() {
-        return Stream.of(CountStrategy.class).collect(Collectors.toSet());
+        return Stream.of(
+                CountStrategy.class,
+                SqlgInjectStepStrategy.class
+        ).collect(Collectors.toSet());
     }
 }
 

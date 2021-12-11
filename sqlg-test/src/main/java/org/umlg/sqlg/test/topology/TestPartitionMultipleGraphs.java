@@ -1,8 +1,8 @@
 package org.umlg.sqlg.test.topology;
 
 import org.apache.commons.collections4.set.ListOrderedSet;
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.lang3.tuple.Triple;
 import org.junit.*;
 import org.umlg.sqlg.structure.PropertyType;
@@ -13,22 +13,27 @@ import org.umlg.sqlg.structure.topology.*;
 import org.umlg.sqlg.test.BaseTest;
 
 import java.net.URL;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Optional;
 
 /**
  * @author Pieter Martin (https://github.com/pietermartin)
  * Date: 2018/01/21
  */
+@SuppressWarnings("unused")
 public class TestPartitionMultipleGraphs extends BaseTest {
 
-    private final List<Triple<TopologyInf, String, TopologyChangeAction>> topologyListenerTriple = new ArrayList<>();
+    private final List<Triple<TopologyInf, TopologyInf, TopologyChangeAction>> topologyListenerTriple = new ArrayList<>();
 
     @SuppressWarnings("Duplicates")
     @BeforeClass
     public static void beforeClass() {
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
         try {
-            configuration = new PropertiesConfiguration(sqlProperties);
+            Configurations configs = new Configurations();
+            configuration = configs.properties(sqlProperties);
             Assume.assumeTrue(isPostgres());
             configuration.addProperty("distributed", true);
             if (!configuration.containsKey("jdbc.url"))
@@ -55,12 +60,12 @@ public class TestPartitionMultipleGraphs extends BaseTest {
             Schema publicSchema = this.sqlgGraph.getTopology().getPublicSchema();
             VertexLabel measurement = publicSchema.ensurePartitionedVertexLabelExist(
                     "Measurement",
-                    new HashMap<String, PropertyType>() {{
+                    new HashMap<>() {{
                         put("uid", PropertyType.STRING);
                         put("date", PropertyType.LOCALDATE);
                         put("temp", PropertyType.INTEGER);
                     }},
-                    ListOrderedSet.listOrderedSet(Collections.singletonList("uid")),
+                    ListOrderedSet.listOrderedSet(List.of("uid", "date")),
                     PartitionType.RANGE,
                     "date");
             Partition p1 = measurement.ensureRangePartitionExists("m1", "'2016-07-01'", "'2016-08-01'");
@@ -93,7 +98,7 @@ public class TestPartitionMultipleGraphs extends BaseTest {
             Assert.assertEquals(1, measurement.getPartitions().size(), 0);
             Thread.sleep(2000);
 
-            Assert.assertEquals(1, sqlgGraph1.getTopology().getPublicSchema().getVertexLabel("Measurement").get().getPartitions().size(), 0);
+            Assert.assertEquals(1, sqlgGraph1.getTopology().getPublicSchema().getVertexLabel("Measurement").orElseThrow().getPartitions().size(), 0);
 
         } catch (Exception e) {
             Assert.fail(e.getMessage());
@@ -112,11 +117,11 @@ public class TestPartitionMultipleGraphs extends BaseTest {
             EdgeLabel livesAt = person.ensurePartitionedEdgeLabelExist(
                     "livesAt",
                     address,
-                    new HashMap<String, PropertyType>() {{
+                    new HashMap<>() {{
                         put("uid", PropertyType.STRING);
                         put("date", PropertyType.LOCALDATE);
                     }},
-                    ListOrderedSet.listOrderedSet(Collections.singletonList("uid")),
+                    ListOrderedSet.listOrderedSet(List.of("uid", "date")),
                     PartitionType.RANGE,
                     "date");
             Partition p1 = livesAt.ensureRangePartitionExists("m1", "'2016-07-01'", "'2016-08-01'");
@@ -148,7 +153,7 @@ public class TestPartitionMultipleGraphs extends BaseTest {
 
             Thread.sleep(2000);
             publicSchema = sqlgGraph1.getTopology().getPublicSchema();
-            Assert.assertEquals(1, publicSchema.getEdgeLabel("livesAt").get().getPartitions().size(), 0);
+            Assert.assertEquals(1, publicSchema.getEdgeLabel("livesAt").orElseThrow().getPartitions().size(), 0);
 
         } catch (Exception e) {
             Assert.fail(e.getMessage());
@@ -162,14 +167,14 @@ public class TestPartitionMultipleGraphs extends BaseTest {
         Schema aSchema = this.sqlgGraph.getTopology().ensureSchemaExist("A");
         VertexLabel a = aSchema.ensurePartitionedVertexLabelExist(
                 "A",
-                new HashMap<String, PropertyType>(){{
+                new HashMap<>(){{
                     put("uid", PropertyType.STRING);
                     put("int1", PropertyType.INTEGER);
                     put("int2", PropertyType.INTEGER);
                     put("int3", PropertyType.INTEGER);
                     put("int4", PropertyType.INTEGER);
                 }},
-                ListOrderedSet.listOrderedSet(Collections.singletonList("uid")),
+                ListOrderedSet.listOrderedSet(List.of("uid", "int1", "int2", "int3", "int4")),
                 PartitionType.LIST,
                 "int1"
         );
@@ -180,7 +185,7 @@ public class TestPartitionMultipleGraphs extends BaseTest {
         this.sqlgGraph.tx().commit();
         Thread.sleep(1000);
 
-        a = this.sqlgGraph1.getTopology().getSchema("A").get().getVertexLabel("A").get();
+        a = this.sqlgGraph1.getTopology().getSchema("A").orElseThrow().getVertexLabel("A").orElseThrow();
         Optional<Partition> p = a.getPartition("int4");
         Assert.assertTrue(p.isPresent());
         Assert.assertNull(p.get().getFrom());
@@ -201,7 +206,7 @@ public class TestPartitionMultipleGraphs extends BaseTest {
         this.sqlgGraph.tx().commit();
         Assert.assertTrue(tlt.receivedEvent(p1, TopologyChangeAction.DELETE));
         Thread.sleep(1000);
-        a = this.sqlgGraph1.getTopology().getSchema("A").get().getVertexLabel("A").get();
+        a = this.sqlgGraph1.getTopology().getSchema("A").orElseThrow().getVertexLabel("A").orElseThrow();
         p = a.getPartition("int4");
         Assert.assertFalse(p.isPresent());
         p = a.getPartition("int3");

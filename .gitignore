@@ -9,11 +9,13 @@ pom.xml.next
 release.properties
 /.idea
 *.iml
+test-case-data
 src/test/db/
 /sqlg-hsqldb-parent/sqlg-hsqldb/src/test/db/
 /sqlg-benchmark-hsqldb/src/test/db/
 /sqlg-h2-parent/sqlg-h2/src/test/db/
 /sqlg-benchmark-h2/src/test/db/
+.DS_Store
 
 ### Eclipse files
 **/.classpath
@@ -21,3 +23,9 @@ src/test/db/
 **/.settings
 /.metadata
 /.recommenders
+/sqlg-ui/src/main/web/node_modules/
+/sqlg-ui/src/main/web/dist/sqlg.js
+/sqlg-ui/src/main/web/dist/index.html
+/sqlg-ui/src/main/web/package-lock.json
+/sqlg-ui/src/main/web/dist/dist/sqlg
+/package-lock.json

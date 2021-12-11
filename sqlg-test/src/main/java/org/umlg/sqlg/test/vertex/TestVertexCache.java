@@ -1,8 +1,8 @@
 package org.umlg.sqlg.test.vertex;
 
 import org.apache.commons.collections4.set.ListOrderedSet;
-import org.apache.commons.configuration.ConfigurationException;
-import org.apache.commons.configuration.PropertiesConfiguration;
+import org.apache.commons.configuration2.builder.fluent.Configurations;
+import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
@@ -10,13 +10,12 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.umlg.sqlg.structure.PropertyType;
+import org.umlg.sqlg.structure.topology.Topology;
+import org.umlg.sqlg.structure.topology.VertexLabel;
 import org.umlg.sqlg.test.BaseTest;
 
 import java.net.URL;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Date: 2014/10/04
@@ -28,7 +27,8 @@ public class TestVertexCache extends BaseTest {
     public static void beforeClass() {
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
         try {
-            configuration = new PropertiesConfiguration(sqlProperties);
+            Configurations configs = new Configurations();
+            configuration = configs.properties(sqlProperties);
             configuration.setProperty("cache.vertices", true);
             if (!configuration.containsKey("jdbc.url")) {
                 throw new IllegalArgumentException(String.format("SqlGraph configuration requires that the %s be set", "jdbc.url"));
@@ -36,6 +36,48 @@ public class TestVertexCache extends BaseTest {
         } catch (ConfigurationException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Test
+    public void testVertexCacheWithIdentifiers() {
+        // This is testing a very specific case that previously failed:
+        //
+        // - cache.vertices is true
+        // - identifiers are being used for vertices
+        // - a given edge label can be between multiple vertex labels
+        // - bothE().otherV() is used in a subsequent traversal
+
+        Topology topology = this.sqlgGraph.getTopology();
+
+        Map<String, PropertyType> vertexProperties = new HashMap<>();
+        vertexProperties.put("id", PropertyType.varChar(10));
+        vertexProperties.put("name", PropertyType.STRING);
+
+        ListOrderedSet<String> identifiers = ListOrderedSet.listOrderedSet(Collections.singletonList("id"));
+
+        VertexLabel vertexLabelA = topology.ensureVertexLabelExist("A", vertexProperties, identifiers);
+        VertexLabel vertexLabelB = topology.ensureVertexLabelExist("B", vertexProperties, identifiers);
+        VertexLabel vertexLabelC = topology.ensureVertexLabelExist("C", vertexProperties, identifiers);
+
+        Map<String, PropertyType> edgeProperties = new HashMap<>();
+        //MariaDb does seem to consider 'ID" and 'id' as the same in 'CREATE' statement.
+        //Change it to _id
+        edgeProperties.put("_id", PropertyType.varChar(10));
+        edgeProperties.put("how", PropertyType.STRING);
+
+        topology.ensureEdgeLabelExist("related", vertexLabelA, vertexLabelB, edgeProperties);
+        topology.ensureEdgeLabelExist("related", vertexLabelA, vertexLabelC, edgeProperties);
+
+        Vertex v1 = this.sqlgGraph.addVertex(T.label, "A", "id", "1", "name", "joe");
+        Vertex v2 = this.sqlgGraph.addVertex(T.label, "B", "id", "2", "name", "frank");
+
+        v1.addEdge("related", v2, "how", "friend");
+
+        // Without the fix, this will trigger a NPE in RecordId.ID.hashCode() because "identifiers" contains a null.
+        Vertex v2a = sqlgGraph.traversal().V().has("id", "1").bothE().otherV().next();
+        Assert.assertEquals(v2, v2a);
+        v2a = sqlgGraph.traversal().V(v1).outE().otherV().next();
+        Assert.assertEquals(v2, v2a);
     }
 
     @Test
@@ -139,7 +181,6 @@ public class TestVertexCache extends BaseTest {
 
     @Test
     public void testPropertiesNotBeingCachedOnVertexOut() {
-
         Vertex v1 = this.sqlgGraph.addVertex(T.label, "Person");
         Vertex v2 = this.sqlgGraph.addVertex(T.label, "Car", "name", "a");
         Vertex v3 = this.sqlgGraph.addVertex(T.label, "Car", "name", "b");

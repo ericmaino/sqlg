@@ -6,11 +6,6 @@ import com.google.common.base.Preconditions;
 import org.umlg.sqlg.structure.PropertyType;
 import org.umlg.sqlg.structure.TopologyInf;
 
-import java.time.LocalDateTime;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Set;
-
 /**
  * Date: 2016/09/04
  * Time: 8:50 AM
@@ -18,16 +13,24 @@ import java.util.Set;
 public class PropertyColumn implements TopologyInf {
 
     private final AbstractLabel abstractLabel;
-    private final String name;
+    private String name;
     private boolean committed = true;
     private final PropertyType propertyType;
-    private final Set<GlobalUniqueIndex> globalUniqueIndices = new HashSet<>();
-    private final Set<GlobalUniqueIndex> uncommittedGlobalUniqueIndices = new HashSet<>();
+    private final boolean isForeignPropertyColumn;;
 
     PropertyColumn(AbstractLabel abstractLabel, String name, PropertyType propertyType) {
         this.abstractLabel = abstractLabel;
         this.name = name;
         this.propertyType = propertyType;
+        this.isForeignPropertyColumn = false;
+    }
+
+    private PropertyColumn(AbstractLabel abstractLabel, String name, PropertyType propertyType, boolean isForeignPropertyColumn) {
+        Preconditions.checkState(isForeignPropertyColumn);
+        this.abstractLabel = abstractLabel;
+        this.name = name;
+        this.propertyType = propertyType;
+        this.isForeignPropertyColumn = true;
     }
 
     public String getName() {
@@ -51,43 +54,13 @@ public class PropertyColumn implements TopologyInf {
         this.committed = committed;
     }
 
-    public Set<GlobalUniqueIndex> getGlobalUniqueIndices() {
-        HashSet<GlobalUniqueIndex> result = new HashSet<>();
-        result.addAll(this.globalUniqueIndices);
-        if (this.abstractLabel.getSchema().getTopology().isSqlWriteLockHeldByCurrentThread()) {
-            result.addAll(this.uncommittedGlobalUniqueIndices);
-        }
-        return result;
-    }
-
     void afterCommit() {
-        Iterator<GlobalUniqueIndex> globalUniqueIndexIter = this.uncommittedGlobalUniqueIndices.iterator();
-        while (globalUniqueIndexIter.hasNext()) {
-            GlobalUniqueIndex globalUniqueIndex = globalUniqueIndexIter.next();
-            this.globalUniqueIndices.add(globalUniqueIndex);
-            globalUniqueIndexIter.remove();
-        }
+        Preconditions.checkState(this.getParentLabel().getTopology().isSchemaChanged(), "PropertyColumn.afterCommit must have schemaChanged = true");
         this.committed = true;
     }
 
     void afterRollback() {
-        Preconditions.checkState(this.getParentLabel().getSchema().getTopology().isSqlWriteLockHeldByCurrentThread(), "PropertyColumn.afterRollback must hold the write lock");
-        this.uncommittedGlobalUniqueIndices.clear();
-    }
-
-    /**
-     * Only called from {@link Topology#fromNotifyJson(int, LocalDateTime)}
-     *
-     * @param globalUniqueIndex The {@link GlobalUniqueIndex} to add.
-     */
-    void addToGlobalUniqueIndexes(GlobalUniqueIndex globalUniqueIndex) {
-        this.globalUniqueIndices.add(globalUniqueIndex);
-        this.abstractLabel.addGlobalUniqueIndexToProperties(this);
-    }
-
-    void addGlobalUniqueIndex(GlobalUniqueIndex globalUniqueIndex) {
-        this.uncommittedGlobalUniqueIndices.add(globalUniqueIndex);
-        this.abstractLabel.addGlobalUniqueIndexToUncommittedProperties(this);
+        Preconditions.checkState(this.getParentLabel().getTopology().isSchemaChanged(), "PropertyColumn.afterRollback must have schemaChanged = true");
     }
 
     ObjectNode toNotifyJson() {
@@ -148,5 +121,22 @@ public class PropertyColumn implements TopologyInf {
     @Override
     public void remove(boolean preserveData) {
     	this.abstractLabel.removeProperty(this, preserveData);
+    }
+
+    @Override
+    public void rename(String name) {
+        this.abstractLabel.renameProperty(name, this);
+    }
+
+    /**
+     * Only called from afterRollback to reset the property's name.
+     * @param name The old name  of the property.
+     */
+    void setName(String name) {
+        this.name = name;
+    }
+
+    PropertyColumn readOnlyCopy(AbstractLabel abstractLabel) {
+        return new PropertyColumn(abstractLabel, this.name, this.propertyType, true);
     }
 }

@@ -6,9 +6,11 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.mchange.v2.c3p0.C3P0ProxyConnection;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.MutableTriple;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.apache.commons.text.StringEscapeUtils;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.util.tools.MultiMap;
@@ -23,6 +25,7 @@ import org.umlg.sqlg.gis.GeographyPolygon;
 import org.umlg.sqlg.gis.Gis;
 import org.umlg.sqlg.predicate.FullText;
 import org.umlg.sqlg.sql.parse.SchemaTableTree;
+import org.umlg.sqlg.sql.parse.WhereClause;
 import org.umlg.sqlg.strategy.SqlgSqlExecutor;
 import org.umlg.sqlg.structure.*;
 import org.umlg.sqlg.structure.topology.*;
@@ -47,7 +50,7 @@ import static org.umlg.sqlg.structure.topology.Topology.*;
  * Date: 2014/07/16
  * Time: 1:42 PM
  */
-@SuppressWarnings("unused")
+@SuppressWarnings({"unused", "rawtypes"})
 public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 
     private static final String BATCH_NULL = "";
@@ -82,7 +85,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
     @Override
     public String createSchemaStatement(String schemaName) {
         // if ever schema is created outside of sqlg while the graph is already instantiated
-        return "CREATE SCHEMA IF NOT EXISTS " + maybeWrapInQoutes(schemaName);
+        return "CREATE SCHEMA " + maybeWrapInQoutes(schemaName);
     }
 
     @Override
@@ -97,7 +100,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 
     @Override
     public Set<String> getInternalSchemas() {
-        return ImmutableSet.copyOf(Arrays.asList("pg_catalog", "information_schema", "tiger", "tiger_data", "topology", "citus"));
+        return ImmutableSet.copyOf(Arrays.asList("pg_catalog", "information_schema", "tiger", "tiger_data", "topology", "citus", "citus_internal", "columnar"));
     }
 
     @Override
@@ -146,43 +149,34 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
     public String getArrayDriverType(PropertyType propertyType) {
         switch (propertyType.ordinal()) {
             case BYTE_ARRAY_ORDINAL:
-                return "bytea";
             case byte_ARRAY_ORDINAL:
                 return "bytea";
             case boolean_ARRAY_ORDINAL:
-                return "bool";
             case BOOLEAN_ARRAY_ORDINAL:
                 return "bool";
             case SHORT_ARRAY_ORDINAL:
-                return "smallint";
             case short_ARRAY_ORDINAL:
                 return "smallint";
             case INTEGER_ARRAY_ORDINAL:
-                return "integer";
             case int_ARRAY_ORDINAL:
                 return "integer";
             case LONG_ARRAY_ORDINAL:
-                return "bigint";
             case long_ARRAY_ORDINAL:
                 return "bigint";
             case FLOAT_ARRAY_ORDINAL:
-                return "float";
             case float_ARRAY_ORDINAL:
-                return "float";
+            case double_ARRAY_ORDINAL:
             case DOUBLE_ARRAY_ORDINAL:
                 return "float";
-            case double_ARRAY_ORDINAL:
-                return "float";
             case STRING_ARRAY_ORDINAL:
-                return "varchar";
+                return "text";
             case LOCALDATETIME_ARRAY_ORDINAL:
-                return "timestamptz";
+            case ZONEDDATETIME_ARRAY_ORDINAL:
+                return "timestamp";
             case LOCALDATE_ARRAY_ORDINAL:
                 return "date";
             case LOCALTIME_ARRAY_ORDINAL:
-                return "timetz";
-            case ZONEDDATETIME_ARRAY_ORDINAL:
-                return "timestamptz";
+                return "time";
             case JSON_ARRAY_ORDINAL:
                 return "jsonb";
             default:
@@ -286,98 +280,6 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 
     @SuppressWarnings("Duplicates")
     @Override
-    public void flushEdgeGlobalUniqueIndexes(SqlgGraph sqlgGraph, Map<MetaEdge, Pair<SortedSet<String>, Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>>>> edgeCache) {
-        for (MetaEdge metaEdge : edgeCache.keySet()) {
-
-            Pair<SortedSet<String>, Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>>> triples = edgeCache.get(metaEdge);
-            Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>> edgeMap = triples.getRight();
-            Map<String, PropertyColumn> propertyColumnMap = sqlgGraph.getTopology().getPropertiesFor(metaEdge.getSchemaTable().withPrefix(EDGE_PREFIX));
-
-
-            for (Map.Entry<String, PropertyColumn> propertyColumnEntry : propertyColumnMap.entrySet()) {
-                PropertyColumn propertyColumn = propertyColumnEntry.getValue();
-                for (GlobalUniqueIndex globalUniqueIndex : propertyColumn.getGlobalUniqueIndices()) {
-                    VertexLabel vertexLabel = sqlgGraph.getTopology().getVertexLabel(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA, globalUniqueIndex.getName()).orElseThrow(IllegalStateException::new);
-                    String sql = constructCompleteCopyCommandSqlVertex(
-                            sqlgGraph,
-                            Schema.GLOBAL_UNIQUE_INDEX_SCHEMA,
-                            globalUniqueIndex.getName(),
-                            new HashSet<>(Arrays.asList(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_VALUE, GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_RECORD_ID, GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_PROPERTY_NAME))
-                    );
-                    try (Writer writer = streamSql(sqlgGraph, sql)) {
-                        for (Map.Entry<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>> sqlgEdgeTripleEntry : edgeMap.entrySet()) {
-                            SqlgEdge sqlgEdge = sqlgEdgeTripleEntry.getKey();
-                            Triple<SqlgVertex, SqlgVertex, Map<String, Object>> triple = sqlgEdgeTripleEntry.getValue();
-                            Map<String, Object> keyValueMap = triple.getRight();
-                            Object value = keyValueMap.get(propertyColumn.getName());
-                            Map<String, Object> globalUniqueIndexValues = new HashMap<>();
-                            if (value != null) {
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_VALUE, value);
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_RECORD_ID, sqlgEdge.id().toString());
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_PROPERTY_NAME, propertyColumn.getName());
-                                writeStreamingVertex(writer, globalUniqueIndexValues, vertexLabel);
-                            } else {
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_VALUE, null);
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_RECORD_ID, sqlgEdge.id().toString());
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_PROPERTY_NAME, propertyColumn.getName());
-                                writeStreamingVertex(writer, globalUniqueIndexValues, vertexLabel);
-                            }
-                        }
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-        }
-    }
-
-    @SuppressWarnings("Duplicates")
-    @Override
-    public void flushVertexGlobalUniqueIndexes(SqlgGraph sqlgGraph, Map<SchemaTable, Pair<SortedSet<String>, Map<SqlgVertex, Map<String, Object>>>> vertexCache) {
-        for (SchemaTable schemaTable : vertexCache.keySet()) {
-            Pair<SortedSet<String>, Map<SqlgVertex, Map<String, Object>>> vertices = vertexCache.get(schemaTable);
-
-            Map<String, PropertyColumn> propertyColumnMap = sqlgGraph.getTopology().getPropertiesFor(schemaTable.withPrefix(VERTEX_PREFIX));
-            for (Map.Entry<String, PropertyColumn> propertyColumnEntry : propertyColumnMap.entrySet()) {
-                PropertyColumn propertyColumn = propertyColumnEntry.getValue();
-                for (GlobalUniqueIndex globalUniqueIndex : propertyColumn.getGlobalUniqueIndices()) {
-
-                    VertexLabel vertexLabel = sqlgGraph.getTopology().getVertexLabel(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA, globalUniqueIndex.getName()).orElseThrow(IllegalStateException::new);
-                    String sql = constructCompleteCopyCommandSqlVertex(
-                            sqlgGraph,
-                            Schema.GLOBAL_UNIQUE_INDEX_SCHEMA,
-                            globalUniqueIndex.getName(),
-                            new HashSet<>(Arrays.asList(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_VALUE, GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_RECORD_ID, GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_PROPERTY_NAME))
-                    );
-                    try (Writer writer = streamSql(sqlgGraph, sql)) {
-                        Map<SqlgVertex, Map<String, Object>> a = vertices.getRight();
-                        for (Map.Entry<SqlgVertex, Map<String, Object>> sqlgVertexMapEntry : a.entrySet()) {
-                            SqlgVertex sqlgVertex = sqlgVertexMapEntry.getKey();
-                            Map<String, Object> keyValueMap = sqlgVertexMapEntry.getValue();
-                            Object value = keyValueMap.get(propertyColumn.getName());
-                            Map<String, Object> globalUniqueIndexValues = new HashMap<>();
-                            if (value != null) {
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_VALUE, value);
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_RECORD_ID, sqlgVertex.id().toString());
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_PROPERTY_NAME, propertyColumn.getName());
-                                writeStreamingVertex(writer, globalUniqueIndexValues, vertexLabel);
-                            } else {
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_VALUE, null);
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_RECORD_ID, sqlgVertex.id().toString());
-                                globalUniqueIndexValues.put(GlobalUniqueIndex.GLOBAL_UNIQUE_INDEX_PROPERTY_NAME, propertyColumn.getName());
-                                writeStreamingVertex(writer, globalUniqueIndexValues, vertexLabel);
-                            }
-                        }
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-        }
-    }
-
-    @SuppressWarnings("Duplicates")
-    @Override
     public void flushEdgeCache(SqlgGraph sqlgGraph, Map<MetaEdge, Pair<SortedSet<String>, Map<SqlgEdge, Triple<SqlgVertex, SqlgVertex, Map<String, Object>>>>> edgeCache) {
         Connection con = sqlgGraph.tx().getConnection();
         try {
@@ -419,7 +321,6 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 sql.append(maybeWrapInQoutes(EDGE_PREFIX + metaEdge.getSchemaTable().getTable()));
                 sql.append(" (");
 
-                //noinspection LoopStatementThatDoesntLoop
                 for (Triple<SqlgVertex, SqlgVertex, Map<String, Object>> triple : triples.getRight().values()) {
                     int count = 1;
 
@@ -519,115 +420,8 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
     }
 
     @Override
-    public void flushVertexGlobalUniqueIndexPropertyCache(SqlgGraph sqlgGraph, Map<SchemaTable, Pair<SortedSet<String>, Map<SqlgVertex, Map<String, Object>>>> schemaVertexPropertyCache) {
-        flushElementGlobalUniqueIndexPropertyCache(sqlgGraph, true, schemaVertexPropertyCache);
-    }
-
-    @Override
     public void flushEdgePropertyCache(SqlgGraph sqlgGraph, Map<SchemaTable, Pair<SortedSet<String>, Map<SqlgEdge, Map<String, Object>>>> edgePropertyCache) {
         flushElementPropertyCache(sqlgGraph, false, edgePropertyCache);
-    }
-
-    @Override
-    public void flushEdgeGlobalUniqueIndexPropertyCache(SqlgGraph sqlgGraph, Map<SchemaTable, Pair<SortedSet<String>, Map<SqlgEdge, Map<String, Object>>>> edgePropertyCache) {
-        flushElementGlobalUniqueIndexPropertyCache(sqlgGraph, false, edgePropertyCache);
-    }
-
-    private <X extends SqlgElement> void flushElementGlobalUniqueIndexPropertyCache(SqlgGraph sqlgGraph, boolean forVertices, Map<SchemaTable, Pair<SortedSet<String>, Map<X, Map<String, Object>>>> schemaVertexPropertyCache) {
-
-        Connection conn = sqlgGraph.tx().getConnection();
-        for (SchemaTable schemaTable : schemaVertexPropertyCache.keySet()) {
-
-            Pair<SortedSet<String>, Map<X, Map<String, Object>>> vertexPropertyCache = schemaVertexPropertyCache.get(schemaTable);
-            Map<String, PropertyColumn> globalUniqueIndexPropertyMap = sqlgGraph.getTopology().getPropertiesWithGlobalUniqueIndexFor(schemaTable.withPrefix(VERTEX_PREFIX));
-
-            for (Map.Entry<String, PropertyColumn> propertyColumnEntry : globalUniqueIndexPropertyMap.entrySet()) {
-                PropertyColumn propertyColumn = propertyColumnEntry.getValue();
-                for (GlobalUniqueIndex globalUniqueIndex : propertyColumn.getGlobalUniqueIndices()) {
-                    SortedSet<String> keys = new TreeSet<>();
-                    keys.add("value");
-                    StringBuilder sql = new StringBuilder();
-                    sql.append("UPDATE ");
-                    sql.append(maybeWrapInQoutes(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA));
-                    sql.append(".");
-                    sql.append(maybeWrapInQoutes((forVertices ? VERTEX_PREFIX : EDGE_PREFIX) + globalUniqueIndex.getName()));
-                    sql.append(" a \nSET\n\t(");
-                    appendKeyForBatchUpdate(PropertyType.STRING, sql, "recordId", false);
-                    sql.append(", ");
-                    appendKeyForBatchUpdate(PropertyType.STRING, sql, "property", false);
-                    sql.append(", ");
-                    appendKeyForBatchUpdate(propertyColumn.getPropertyType(), sql, "value", false);
-                    sql.append(") = \n\t(");
-                    sql.append("v.");
-                    appendKeyForBatchUpdate(PropertyType.STRING, sql, "recordId", true);
-                    sql.append(", v.");
-                    appendKeyForBatchUpdate(PropertyType.STRING, sql, "property", true);
-                    sql.append(", ");
-                    int count = 1;
-                    for (String key : keys) {
-                        sql.append("v.");
-                        PropertyType propertyType = propertyColumn.getPropertyType();
-                        appendKeyForBatchUpdate(propertyType, sql, key, true);
-                        sqlCastArray(sql, propertyType);
-                        if (count++ < keys.size()) {
-                            sql.append(", ");
-                        }
-                    }
-                    sql.append(")\nFROM (\nVALUES\n\t");
-                    count = 1;
-                    boolean foundSomething = false;
-                    for (X sqlgElement : vertexPropertyCache.getRight().keySet()) {
-                        Map<String, Object> properties = vertexPropertyCache.getRight().get(sqlgElement);
-                        if (!foundSomething && properties.containsKey(propertyColumn.getName())) {
-                            foundSomething = true;
-                        }
-                        sql.append("($token$");
-                        sql.append(sqlgElement.id().toString());
-                        sql.append("$token$, $token$");
-                        sql.append(propertyColumn.getName());
-                        sql.append("$token$, ");
-                        int countProperties = 1;
-                        Object value = properties.get(propertyColumn.getName());
-                        if (value == null) {
-                            if (sqlgElement.property(propertyColumn.getName()).isPresent()) {
-                                value = sqlgElement.value(propertyColumn.getName());
-                            }
-                        }
-                        PropertyType propertyType = propertyColumn.getPropertyType();
-                        appendSqlValue(sql, value, propertyType);
-                        sql.append(")");
-                        if (count++ < vertexPropertyCache.getRight().size()) {
-                            sql.append(",\n\t");
-                        }
-                    }
-
-                    if (!foundSomething) {
-                        continue;
-                    }
-
-                    sql.append("\n) AS v(\"recordId\", property, ");
-                    count = 1;
-                    for (String key : keys) {
-                        PropertyType propertyType = propertyColumn.getPropertyType();
-                        appendKeyForBatchUpdate(propertyType, sql, key, false);
-                        if (count++ < keys.size()) {
-                            sql.append(", ");
-                        }
-                    }
-                    sql.append(")");
-                    sql.append("\nWHERE a.\"recordId\" = v.\"recordId\" and a.property = v.property");
-                    if (logger.isDebugEnabled()) {
-                        logger.debug(sql.toString());
-                    }
-                    try (Statement statement = conn.createStatement()) {
-                        statement.execute(sql.toString());
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-        }
-
     }
 
     @SuppressWarnings("Duplicates")
@@ -682,6 +476,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     sql.append("null");
                 }
                 break;
+            case VARCHAR_ORDINAL:
             case STRING_ORDINAL:
                 if (value != null) {
                     sql.append("'");
@@ -712,7 +507,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             case LOCALTIME_ORDINAL:
                 if (value != null) {
                     sql.append("'");
-                    sql.append(shiftDST((LocalTime) value).toString());
+                    sql.append(Time.valueOf((LocalTime) value).toString());
                     sql.append("'::TIME");
                 } else {
                     sql.append("null");
@@ -1042,7 +837,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     int countStringArray = 1;
                     for (LocalTime s : localTimeArray) {
                         sql.append("'");
-                        sql.append(shiftDST(s).toLocalTime().toString());
+                        sql.append(Time.valueOf(s).toLocalTime().toString());
                         sql.append("'::TIME");
                         if (countStringArray++ < localTimeArray.length) {
                             sql.append(",");
@@ -1247,8 +1042,9 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             int count = 1;
             //this map is for optimizations reason to not look up the property via all tables within the loop
             Map<String, PropertyType> keyPropertyTypeMap = new HashMap<>();
+            Map<String, PropertyType> keyPropertyTypes = sqlgGraph.getTopology().getTableFor(schemaTable.withPrefix(forVertices ? VERTEX_PREFIX : EDGE_PREFIX));
             for (String key : keys) {
-                PropertyType propertyType = sqlgGraph.getTopology().getTableFor(schemaTable.withPrefix(forVertices ? VERTEX_PREFIX : EDGE_PREFIX)).get(key);
+                PropertyType propertyType = keyPropertyTypes.get(key);
                 if (keys.size() == 1 && propertyType.getPostFixes().length > 0) {
                     sql.append("(");
                 }
@@ -1280,9 +1076,9 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 
             AbstractLabel abstractLabel;
             if (forVertices) {
-                abstractLabel = sqlgGraph.getTopology().getSchema(schemaTable.getSchema()).get().getVertexLabel(schemaTable.getTable()).get();
+                abstractLabel = sqlgGraph.getTopology().getSchema(schemaTable.getSchema()).orElseThrow().getVertexLabel(schemaTable.getTable()).orElseThrow();
             } else {
-                abstractLabel = sqlgGraph.getTopology().getSchema(schemaTable.getSchema()).get().getEdgeLabel(schemaTable.getTable()).get();
+                abstractLabel = sqlgGraph.getTopology().getSchema(schemaTable.getSchema()).orElseThrow().getEdgeLabel(schemaTable.getTable()).orElseThrow();
             }
 
             for (SqlgElement sqlgElement : vertexPropertyCache.keySet()) {
@@ -1295,7 +1091,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     int countIdentifiers = 0;
                     for (Comparable identifier : ((RecordId) sqlgElement.id()).getID().getIdentifiers()) {
                         String identifierProperty = abstractLabel.getIdentifiers().get(countIdentifiers++);
-                        appendSqlValue(sql, identifier, abstractLabel.getProperty(identifierProperty).get().getPropertyType());
+                        appendSqlValue(sql, identifier, abstractLabel.getProperty(identifierProperty).orElseThrow().getPropertyType());
                         sql.append(",");
                     }
                 }
@@ -1593,6 +1389,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     String key = entry.getKey();
                     Object value = entry.getValue();
                     PropertyType propertyType;
+                    //noinspection StringEquality
                     if (key == Topology.ID) {
                         propertyType = PropertyType.LONG;
                     } else {
@@ -1655,7 +1452,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 int count = 0;
                 for (String identifier : outVertexLabel.getIdentifiers()) {
 //                    Object value = outVertex.value(identifier);
-                    Object value = ((RecordId)outVertex.id()).getID().getIdentifiers().get(count++);
+                    Object value = ((RecordId) outVertex.id()).getID().getIdentifiers().get(count++);
                     PropertyType propertyType = outVertexLabel.getProperty(identifier).orElseThrow(
                             () -> new IllegalStateException(String.format("identifier %s must be present on %s", identifier, outVertexLabel.getFullName()))
                     ).getPropertyType();
@@ -1670,7 +1467,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 int count = 0;
                 for (String identifier : inVertexLabel.getIdentifiers()) {
 //                    Object value = inVertex.value(identifier);
-                    Object value = ((RecordId)inVertex.id()).getID().getIdentifiers().get(count++);
+                    Object value = ((RecordId) inVertex.id()).getID().getIdentifiers().get(count++);
                     PropertyType propertyType = inVertexLabel.getProperty(identifier).orElseThrow(
                             () -> new IllegalStateException(String.format("identifier %s must be present on %s", identifier, inVertexLabel.getFullName()))
                     ).getPropertyType();
@@ -1744,7 +1541,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     result = getBatchNull();
                 } else {
                     LocalTime lt = (LocalTime) value;
-                    result = shiftDST(lt).toString();
+                    result = Time.valueOf(lt).toString();
                 }
                 break;
             case ZONEDDATETIME_ARRAY_ORDINAL:
@@ -1840,7 +1637,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 length = java.lang.reflect.Array.getLength(value);
                 for (int i = 0; i < length; i++) {
                     LocalTime localTime = localTimes[i];
-                    result = shiftDST(localTime).toString();
+                    result = Time.valueOf(localTime).toString();
                     sb.append(result);
                     if (i < length - 1) {
                         sb.append(",");
@@ -1863,7 +1660,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     length = java.lang.reflect.Array.getLength(value);
                     for (int i = 0; i < length; i++) {
                         String valueOfArray = java.lang.reflect.Array.get(value, i).toString();
-                        sb.append(escapeSpecialCharacters(valueOfArray));
+                        sb.append(escapeSpecialCharactersForArray(valueOfArray));
                         if (i < length - 1) {
                             sb.append(",");
                         }
@@ -1874,70 +1671,6 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 result = escapeSpecialCharacters(value.toString());
         }
         return result;
-    }
-
-    @Override
-    public void flushRemovedGlobalUniqueIndexVertices(SqlgGraph sqlgGraph, Map<SchemaTable, List<SqlgVertex>> removeVertexCache) {
-
-        if (!removeVertexCache.isEmpty()) {
-
-            Map<String, PropertyType> tmpColumns = new HashMap<>();
-            tmpColumns.put("recordId", PropertyType.STRING);
-            tmpColumns.put("property", PropertyType.STRING);
-
-            //split the list of vertices, postgres existVertexLabel a 2 byte limit in the in clause
-            for (Map.Entry<SchemaTable, List<SqlgVertex>> schemaVertices : removeVertexCache.entrySet()) {
-                SchemaTable schemaTable = schemaVertices.getKey();
-                Map<String, PropertyColumn> propertyColumns = sqlgGraph.getTopology().getPropertiesWithGlobalUniqueIndexFor(schemaTable.withPrefix(VERTEX_PREFIX));
-                for (PropertyColumn propertyColumn : propertyColumns.values()) {
-                    for (GlobalUniqueIndex globalUniqueIndex : propertyColumn.getGlobalUniqueIndices()) {
-                        List<SqlgVertex> vertices = schemaVertices.getValue();
-                        if (!vertices.isEmpty()) {
-                            SecureRandom random = new SecureRandom();
-                            byte bytes[] = new byte[6];
-                            random.nextBytes(bytes);
-                            String tmpTableIdentified = Base64.getEncoder().encodeToString(bytes);
-                            sqlgGraph.getTopology().getPublicSchema().createTempTable(VERTEX_PREFIX + tmpTableIdentified, tmpColumns);
-                            String copySql = ((SqlBulkDialect) sqlgGraph.getSqlDialect())
-                                    .temporaryTableCopyCommandSqlVertex(
-                                            sqlgGraph,
-                                            SchemaTable.of("public", tmpTableIdentified), tmpColumns.keySet());
-                            Writer writer = ((SqlBulkDialect) sqlgGraph.getSqlDialect()).streamSql(sqlgGraph, copySql);
-                            for (SqlgVertex sqlgVertex : vertices) {
-                                Map<String, Object> tmpMap = new HashMap<>();
-                                tmpMap.put("recordId", sqlgVertex.id().toString());
-                                tmpMap.put("property", propertyColumn.getName());
-                                ((SqlBulkDialect) sqlgGraph.getSqlDialect()).writeTemporaryStreamingVertex(writer, tmpMap);
-                            }
-                            try {
-                                writer.close();
-                            } catch (IOException e) {
-                                throw new RuntimeException(e);
-                            }
-                            StringBuilder sql = new StringBuilder("WITH tmp as (SELECT * FROM " + sqlgGraph.getSqlDialect().maybeWrapInQoutes(VERTEX_PREFIX + tmpTableIdentified) + ")\n");
-                            sql.append("DELETE FROM ");
-                            sql.append(sqlgGraph.getSqlDialect().maybeWrapInQoutes(Schema.GLOBAL_UNIQUE_INDEX_SCHEMA));
-                            sql.append(".");
-                            sql.append(sqlgGraph.getSqlDialect().maybeWrapInQoutes(VERTEX_PREFIX + globalUniqueIndex.getName()));
-                            sql.append("as gui \nUSING tmp WHERE ");
-                            sql.append("tmp.\"recordId\" = gui.\"recordId\" AND tmp.property = gui.property");
-                            if (sqlgGraph.getSqlDialect().needsSemicolon()) {
-                                sql.append(";");
-                            }
-                            if (logger.isDebugEnabled()) {
-                                logger.debug(sql.toString());
-                            }
-                            Connection conn = sqlgGraph.tx().getConnection();
-                            try (PreparedStatement preparedStatement = conn.prepareStatement(sql.toString())) {
-                                preparedStatement.executeUpdate();
-                            } catch (SQLException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     @Override
@@ -2022,6 +1755,26 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 //        return new ByteArrayInputStream(sb.toString().getBytes());
 //    }
 
+    private String escapeSpecialCharactersForArray(String s) {
+        StringBuilder sb = new StringBuilder();
+        boolean needEscape = s.length() == 0; // escape empty strings
+        for (int a = 0; a < s.length(); a++) {
+            char c = s.charAt(a);
+            if (c == '\n' || c == '\r' || c == 0 || c == COPY_COMMAND_DELIMITER.charAt(0)) {
+                needEscape = true;
+            }
+            if (c == ESCAPE || c == QUOTE || c == '{' || c == '}' || c == ' ') {
+                needEscape = true;
+                sb.append(ESCAPE);
+            }
+            sb.append(c);
+        }
+        if (needEscape) {
+            return QUOTE + sb.toString() + QUOTE;
+        }
+        return s;
+    }
+
     /**
      * this follows the PostgreSQL rules at https://www.postgresql.org/docs/current/static/sql-copy.html#AEN77663
      * "If the value contains the delimiter character, the QUOTE character, the NULL string, a carriage return,
@@ -2067,11 +1820,11 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             case LOCALDATE_ORDINAL:
                 return new String[]{"DATE"};
             case LOCALDATETIME_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE"};
+                return new String[]{"TIMESTAMP"};
             case ZONEDDATETIME_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE", "TEXT"};
+                return new String[]{"TIMESTAMP", "TEXT"};
             case LOCALTIME_ORDINAL:
-                return new String[]{"TIME WITH TIME ZONE"};
+                return new String[]{"TIME"};
             case PERIOD_ORDINAL:
                 return new String[]{"INTEGER", "INTEGER", "INTEGER"};
             case DURATION_ORDINAL:
@@ -2107,13 +1860,13 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             case STRING_ARRAY_ORDINAL:
                 return new String[]{"TEXT[]"};
             case LOCALDATETIME_ARRAY_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE[]"};
+                return new String[]{"TIMESTAMP[]"};
             case LOCALDATE_ARRAY_ORDINAL:
                 return new String[]{"DATE[]"};
             case LOCALTIME_ARRAY_ORDINAL:
-                return new String[]{"TIME WITH TIME ZONE[]"};
+                return new String[]{"TIME[]"};
             case ZONEDDATETIME_ARRAY_ORDINAL:
-                return new String[]{"TIMESTAMP WITH TIME ZONE[]", "TEXT[]"};
+                return new String[]{"TIMESTAMP[]", "TEXT[]"};
             case DURATION_ARRAY_ORDINAL:
                 return new String[]{"BIGINT[]", "INTEGER[]"};
             case PERIOD_ARRAY_ORDINAL:
@@ -2210,9 +1963,9 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 return PropertyType.STRING_ARRAY;
             case "_date":
                 return PropertyType.LOCALDATE_ARRAY;
-            case "_timetz":
+            case "_time":
                 return PropertyType.LOCALTIME_ARRAY;
-            case "_timestamptz":
+            case "_timestamp":
                 //need to check the next column to know if its a LocalDateTime or ZonedDateTime array
                 Triple<String, Integer, String> metaData = metaDataIter.next();
                 metaDataIter.previous();
@@ -2623,7 +2376,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 int count = 0;
                 for (String s : byteAsString) {
                     Integer byteAsInteger = Integer.parseUnsignedInt(s.replace("\"", ""));
-                    result[count++] = new Byte("");
+                    result[count++] = Byte.parseByte("");
                 }
                 properties.put(columnName, result);
                 break;
@@ -2713,7 +2466,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             sql.append(" (");
             int count = 1;
             for (String key : Arrays.asList("out", "in")) {
-                if (count > 1 && count <= 2) {
+                if (count == 2) {
                     sql.append(", ");
                 }
                 count++;
@@ -2764,7 +2517,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             columns.put("out", outPropertyType);
             columns.put("in", inPropertyType);
             SecureRandom random = new SecureRandom();
-            byte bytes[] = new byte[6];
+            byte[] bytes = new byte[6];
             random.nextBytes(bytes);
             String tmpTableIdentified = Base64.getEncoder().encodeToString(bytes);
             tmpTableIdentified = Topology.BULK_TEMP_EDGE + tmpTableIdentified;
@@ -2777,7 +2530,6 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             Preconditions.checkState(outVertexLabelOptional.isPresent(), "Out VertexLabel must be present. Not found for %s", out.toString());
             Preconditions.checkState(inVertexLabelOptional.isPresent(), "In VertexLabel must be present. Not found for %s", in.toString());
 
-            //noinspection OptionalGetWithoutIsPresent
             sqlgGraph.getTopology().ensureEdgeLabelExist(edgeLabel, outVertexLabelOptional.get(), inVertexLabelOptional.get(), edgeColumns);
 
             StringBuilder sql = new StringBuilder("INSERT INTO \n");
@@ -2976,7 +2728,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
         sql.append("ALTER SEQUENCE ");
         sql.append(sequence);
         sql.append(" CACHE ");
-        sql.append(String.valueOf(batchSize));
+        sql.append(batchSize);
         if (this.needsSemicolon()) {
             sql.append(";");
         }
@@ -3094,52 +2846,49 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
         List<String> result = new ArrayList<>();
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "graph\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
-                "\"updatedOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
+                "\"updatedOn\" TIMESTAMP, " +
                 "\"version\" TEXT, " +
                 "\"dbVersion\" TEXT);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "schema\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" TEXT);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "vertex\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" TEXT, \"schemaVertex\" TEXT, " +
                 "\"partitionType\" TEXT, " +
                 "\"partitionExpression\" TEXT," +
                 "\"shardCount\" INTEGER);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "edge\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" TEXT, " +
                 "\"partitionType\" TEXT, " +
                 "\"partitionExpression\" TEXT, " +
                 "\"shardCount\" INTEGER);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "partition\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" TEXT, " +
                 "\"from\" TEXT, " +
                 "\"to\" TEXT, " +
                 "\"in\" TEXT, " +
+                "\"modulus\" BIGINT, " +
+                "\"remainder\" BIGINT, " +
                 "\"partitionType\" TEXT, " +
                 "\"partitionExpression\" TEXT);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "property\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" TEXT, " +
                 "\"type\" TEXT);");
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "index\" (" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                "\"createdOn\" TIMESTAMP, " +
                 "\"name\" TEXT, " +
                 "\"index_type\" TEXT);");
-        result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "globalUniqueIndex\" (" +
-                "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
-                "\"name\" TEXT, " +
-                "CONSTRAINT propertyUniqueConstraint UNIQUE(name));");
 
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.EDGE_PREFIX + "schema_vertex\"(" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
@@ -3290,13 +3039,6 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
         result.add("CREATE INDEX IF NOT EXISTS \"" + Topology.EDGE_PREFIX + "_index_property_property__I_idx\" ON \"sqlg_schema\".\"E_index_property\" (\"sqlg_schema.property__I\");");
         result.add("CREATE INDEX IF NOT EXISTS \"" + Topology.EDGE_PREFIX + "_index_property_index__O_idx\" ON \"sqlg_schema\".\"E_index_property\" (\"sqlg_schema.index__O\");");
 
-        result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.EDGE_PREFIX + "globalUniqueIndex_property\"(" +
-                "\"ID\" SERIAL PRIMARY KEY, " +
-                "\"sqlg_schema.property__I\" BIGINT, " +
-                "\"sqlg_schema.globalUniqueIndex__O\" BIGINT, " +
-                "FOREIGN KEY (\"sqlg_schema.property__I\") REFERENCES \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "property\" (\"ID\") DEFERRABLE, " +
-                "FOREIGN KEY (\"sqlg_schema.globalUniqueIndex__O\") REFERENCES \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "globalUniqueIndex\" (\"ID\") DEFERRABLE);");
-
         result.add("CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"" + Topology.VERTEX_PREFIX + "log\"(" +
                 "\"ID\" SERIAL PRIMARY KEY, " +
                 "\"timestamp\" TIMESTAMP, " +
@@ -3308,7 +3050,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 
     @Override
     public String sqlgCreateTopologyGraph() {
-        return "CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_graph\" (\"ID\" SERIAL PRIMARY KEY, \"createdOn\" TIMESTAMP WITH TIME ZONE, \"updatedOn\" TIMESTAMP WITH TIME ZONE, \"version\" TEXT, \"dbVersion\" TEXT);";
+        return "CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_graph\" (\"ID\" SERIAL PRIMARY KEY, \"createdOn\" TIMESTAMP, \"updatedOn\" TIMESTAMP, \"version\" TEXT, \"dbVersion\" TEXT);";
     }
 
     @Override
@@ -3317,8 +3059,16 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
     }
 
     @Override
+    public List<String> addHashPartitionColumns() {
+        return List.of(
+                "ALTER TABLE \"sqlg_schema\".\"V_partition\" ADD COLUMN \"modulus\" INTEGER;",
+                "ALTER TABLE \"sqlg_schema\".\"V_partition\" ADD COLUMN \"remainder\" INTEGER;"
+        );
+    }
+
+    @Override
     public List<String> addPartitionTables() {
-        return Arrays.asList(
+        return List.of(
                 "ALTER TABLE \"sqlg_schema\".\"V_vertex\" ADD COLUMN \"partitionType\" TEXT DEFAULT 'NONE';",
                 "ALTER TABLE \"sqlg_schema\".\"V_vertex\" ADD COLUMN \"partitionExpression\" TEXT;",
                 "ALTER TABLE \"sqlg_schema\".\"V_vertex\" ADD COLUMN \"shardCount\" INTEGER;",
@@ -3327,7 +3077,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 "ALTER TABLE \"sqlg_schema\".\"V_edge\" ADD COLUMN \"shardCount\" INTEGER;",
                 "CREATE TABLE IF NOT EXISTS \"sqlg_schema\".\"V_partition\" (" +
                         "\"ID\" SERIAL PRIMARY KEY, " +
-                        "\"createdOn\" TIMESTAMP WITH TIME ZONE, " +
+                        "\"createdOn\" TIMESTAMP, " +
                         "\"name\" TEXT, " +
                         "\"from\" TEXT, " +
                         "\"to\" TEXT, " +
@@ -3418,7 +3168,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     if (data != null) {
                         int a = 0;
                         for (Object o : data) {
-                            data[a++] = shiftDST(((Time) o).toLocalTime());
+                            data[a++] = Time.valueOf(((Time) o).toLocalTime());
                         }
                     }
                     // fall through
@@ -3698,7 +3448,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 r -> new Thread(r, "Sqlg notification listener " + sqlgGraph.toString()));
         try {
             Semaphore listeningSemaphore = new Semaphore(1);
-            listener = new TopologyChangeListener(sqlgGraph, listeningSemaphore);
+            this.listener = new TopologyChangeListener(sqlgGraph, listeningSemaphore);
             this.future = scheduledExecutorService.schedule(listener, 500, MILLISECONDS);
             //block here to only return once the listener is listening.
             listeningSemaphore.acquire();
@@ -3761,12 +3511,12 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
      */
     private class TopologyChangeListener implements Runnable {
 
-        private SqlgGraph sqlgGraph;
-        private Semaphore semaphore;
+        private final SqlgGraph sqlgGraph;
+        private final Semaphore semaphore;
         /**
          * should we keep running?
          */
-        private AtomicBoolean run = new AtomicBoolean(true);
+        private final AtomicBoolean run = new AtomicBoolean(true);
 
         TopologyChangeListener(SqlgGraph sqlgGraph, Semaphore semaphore) {
             this.sqlgGraph = sqlgGraph;
@@ -3796,11 +3546,11 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     stmt.close();
                     //Does not work while in a transaction.
                     connection.rollback();
-                    PGNotification notifications[] = pgConnection.getNotifications();
+                    PGNotification[] notifications = pgConnection.getNotifications();
                     if (notifications != null) {
-                        for (int i = 0; i < notifications.length; i++) {
-                            int pid = notifications[i].getPID();
-                            String notify = notifications[i].getParameter();
+                        for (PGNotification notification : notifications) {
+                            int pid = notification.getPID();
+                            String notify = notification.getParameter();
                             LocalDateTime timestamp = LocalDateTime.parse(notify, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
                             PostgresDialect.this.executorService.submit(() -> {
                                 try {
@@ -3821,16 +3571,17 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                             });
                         }
                     }
+                    //noinspection BusyWait
                     Thread.sleep(500);
                 }
                 this.sqlgGraph.tx().rollback();
             } catch (SQLException e) {
-                logger.error(String.format("change listener on graph %s error", this.sqlgGraph.toString()), e);
+                logger.error(String.format("change listener on graph %s error", this.sqlgGraph), e);
                 this.sqlgGraph.tx().rollback();
                 throw new RuntimeException(e);
             } catch (InterruptedException e) {
                 if (run.get()) {
-                    logger.warn(String.format("change listener on graph %s interrupted.", this.sqlgGraph.toString()));
+                    logger.warn(String.format("change listener on graph %s interrupted.", this.sqlgGraph));
                 }
                 this.sqlgGraph.tx().rollback();
                 //swallow
@@ -3838,21 +3589,21 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
         }
     }
 
-    /**
-     * Postgres gets confused by DST, it sets the timezone badly and then reads the wrong value out, so we convert the value to "winter time"
-     *
-     * @param lt the current time
-     * @return the time in "winter time" if there is DST in effect today
-     */
-    @SuppressWarnings({"deprecation", "Duplicates"})
-    private static Time shiftDST(LocalTime lt) {
-        Time t = Time.valueOf(lt);
-        int offset = Calendar.getInstance().get(Calendar.DST_OFFSET) / 1000;
-        // I know this are deprecated methods, but it's so much clearer than alternatives
-        int m = t.getSeconds();
-        t.setSeconds(m + offset);
-        return t;
-    }
+//    /**
+//     * Postgres gets confused by DST, it sets the timezone badly and then reads the wrong value out, so we convert the value to "winter time"
+//     *
+//     * @param lt the current time
+//     * @return the time in "winter time" if there is DST in effect today
+//     */
+//    @SuppressWarnings({"Duplicates"})
+//    private static Time shiftDST(LocalTime lt) {
+//        Time t = Time.valueOf(lt);
+//        int offset = Calendar.getInstance().get(Calendar.DST_OFFSET) / 1000;
+//        // I know this are deprecated methods, but it's so much clearer than alternatives
+//        int m = t.getSeconds();
+//        t.setSeconds(m + offset);
+//        return t;
+//    }
 
     @Override
     public String getFullTextQueryText(FullText fullText, String column) {
@@ -3864,6 +3615,16 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             leftHand = column;
         }
         return "to_tsvector('" + fullText.getConfiguration() + "', " + leftHand + ") @@ " + toQuery + "('" + fullText.getConfiguration() + "',?)";
+    }
+
+    @Override
+    public String getArrayContainsQueryText(String column) {
+        return column + " @> ?";
+    }
+
+    @Override
+    public String getArrayOverlapsQueryText(String column) {
+        return column + " && ?";
     }
 
     @Override
@@ -3921,12 +3682,10 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                         lastIndexType = nonUnique ? IndexType.NON_UNIQUE : IndexType.UNIQUE;
                     } else if (!lastIndexName.equals(indexName)) {
                         if (!lastIndexName.endsWith("_pkey") && !lastIndexName.endsWith("_idx")) {
-                            if (!Schema.GLOBAL_UNIQUE_INDEX_SCHEMA.equals(schema)) {
-                                //System.out.println(lastColumns);
-                                //TopologyManager.addGlobalUniqueIndex(sqlgGraph,lastIndexName,lastColumns);
-                                //} else {
-                                MultiMap.put(ret, lastKey, new IndexRef(lastIndexName, lastIndexType, lastColumns));
-                            }
+                            //System.out.println(lastColumns);
+                            //TopologyManager.addGlobalUniqueIndex(sqlgGraph,lastIndexName,lastColumns);
+                            //} else {
+                            MultiMap.put(ret, lastKey, new IndexRef(lastIndexName, lastIndexType, lastColumns));
                         }
                         lastColumns.clear();
                         lastIndexName = indexName;
@@ -3937,12 +3696,10 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     lastKey = key;
                 }
                 if (lastIndexName != null && !lastIndexName.endsWith("_pkey") && !lastIndexName.endsWith("_idx")) {
-                    if (!Schema.GLOBAL_UNIQUE_INDEX_SCHEMA.equals(schema)) {
-                        //System.out.println(lastColumns);
-                        //TopologyManager.addGlobalUniqueIndex(sqlgGraph,lastIndexName,lastColumns);
-                        //} else {
-                        MultiMap.put(ret, lastKey, new IndexRef(lastIndexName, lastIndexType, lastColumns));
-                    }
+                    //System.out.println(lastColumns);
+                    //TopologyManager.addGlobalUniqueIndex(sqlgGraph,lastIndexName,lastColumns);
+                    //} else {
+                    MultiMap.put(ret, lastKey, new IndexRef(lastIndexName, lastIndexType, lastColumns));
                 }
 
                 return ret;
@@ -4029,14 +3786,14 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 return sb.toString();
             case LOCALTIME_ORDINAL:
                 LocalTime lt = (LocalTime) value;
-                return "'" + escapeQuotes(shiftDST(lt)) + "'" + "::" + this.propertyTypeToSqlDefinition(propertyType)[0];
+                return "'" + escapeQuotes(Time.valueOf(lt)) + "'" + "::" + this.propertyTypeToSqlDefinition(propertyType)[0];
             case LOCALTIME_ARRAY_ORDINAL:
                 sb = new StringBuilder();
                 sb.append("'{");
                 int length = java.lang.reflect.Array.getLength(value);
                 for (int i = 0; i < length; i++) {
                     LocalTime valueOfArray = (LocalTime) java.lang.reflect.Array.get(value, i);
-                    sb.append(shiftDST(valueOfArray).toString());
+                    sb.append(Time.valueOf(valueOfArray).toString());
                     if (i < length - 1) {
                         sb.append(",");
                     }
@@ -4203,13 +3960,13 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
 
     @SuppressWarnings("Duplicates")
     @Override
-    public List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> drop(
+    public List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> drop(
             SqlgGraph sqlgGraph,
             String leafElementsToDelete,
             String edgesToDelete,
             LinkedList<SchemaTableTree> distinctQueryStack) {
 
-        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> sqls = new ArrayList<>();
+        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> sqls = new ArrayList<>();
         SchemaTableTree last = distinctQueryStack.getLast();
 
         SchemaTableTree lastEdge = null;
@@ -4266,12 +4023,12 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                             sb.append(maybeWrapInQoutes(lastVertexLabel.getSchema().getName() + "." + lastVertexLabel.getName() + "." + identifier + Topology.OUT_VERTEX_COLUMN_END));
                             sb.append(" = todelete.");
                             sb.append(maybeWrapInQoutes(last.lastMappedAliasIdentifier(identifier)));
-                            if (count++ < edgeLabel.getIdentifiers().size()) {
+                            if (count++ < last.getIdentifiers().size()) {
                                 sb.append(" AND\n");
                             }
                         }
                     }
-                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), SchemaTable.of(edgeLabel.getSchema().getName(), Topology.EDGE_PREFIX + edgeLabel.getName())));
+                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
                 }
             }
             for (EdgeLabel edgeLabel : lastVertexLabel.getInEdgeLabels().values()) {
@@ -4295,19 +4052,19 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                             sb.append(maybeWrapInQoutes(lastVertexLabel.getSchema().getName() + "." + lastVertexLabel.getName() + "." + identifier + Topology.IN_VERTEX_COLUMN_END));
                             sb.append(" = todelete.");
                             sb.append(maybeWrapInQoutes(last.lastMappedAliasIdentifier(identifier)));
-                            if (count++ < edgeLabel.getIdentifiers().size()) {
+                            if (count++ < last.getIdentifiers().size()) {
                                 sb.append(" AND\n");
                             }
                         }
                     }
-                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), SchemaTable.of(edgeLabel.getSchema().getName(), Topology.EDGE_PREFIX + edgeLabel.getName())));
+                    sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false));
                 }
             }
         }
 
         //Need to defer foreign key constraint checks.
         if (queryTraversesEdge) {
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, "SET CONSTRAINTS ALL DEFERRED", null));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, "SET CONSTRAINTS ALL DEFERRED", false));
         }
         //Delete the leaf vertices, if there are foreign keys then its been deferred.
         StringBuilder sb = new StringBuilder();
@@ -4333,17 +4090,47 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             }
             for (String identifier : last.getIdentifiers()) {
                 sb.append("a.");
-                sb.append(maybeWrapInQoutes( identifier));
+                sb.append(maybeWrapInQoutes(identifier));
                 sb.append(" = todelete.");
                 sb.append(maybeWrapInQoutes(last.lastMappedAliasIdentifier(identifier)));
-                if (count < abstractLabel.getIdentifiers().size()) {
-                    sb.append(" AND\n");
+                if (count < last.getIdentifiers().size()) {
+                    sb.append(" AND\n\t");
                 }
                 count++;
             }
 
         }
-        sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), last.getSchemaTable()));
+        MutableTriple<SqlgSqlExecutor.DROP_QUERY, String, Boolean> triple = MutableTriple.of(SqlgSqlExecutor.DROP_QUERY.NORMAL, sb.toString(), false);
+        //If the partition key is part of the HasContainer(s) then add it to the 'delete' statement's where clause.
+        if (isVertex && lastVertexLabel.isPartition()) {
+            for (HasContainer hasContainer : last.getHasContainers()) {
+                String partitionExpression = lastVertexLabel.getPartitionExpression();
+                partitionExpression = StringUtils.removeStart(partitionExpression, getColumnEscapeKey());
+                partitionExpression = StringUtils.removeEnd(partitionExpression, getColumnEscapeKey());
+                if (hasContainer.getKey().equals(partitionExpression)) {
+                    WhereClause whereClause = WhereClause.from(hasContainer.getPredicate());
+                    String where = whereClause.toSql(sqlgGraph, last, hasContainer, "a");
+                    sb.append(" AND\n\t").append(where);
+                    last.getAdditionalPartitionHasContainers().add(hasContainer);
+                    triple.setRight(true);
+                }
+            }
+        } else if (!isVertex && lastEdgeLabel.isPartition()) {
+            for (HasContainer hasContainer : last.getHasContainers()) {
+                String partitionExpression = lastEdgeLabel.getPartitionExpression();
+                partitionExpression = StringUtils.removeStart(partitionExpression, getColumnEscapeKey());
+                partitionExpression = StringUtils.removeEnd(partitionExpression, getColumnEscapeKey());
+                if (hasContainer.getKey().equals(partitionExpression)) {
+                    WhereClause whereClause = WhereClause.from(hasContainer.getPredicate());
+                    String where = whereClause.toSql(sqlgGraph, last, hasContainer, "a");
+                    sb.append(" AND\n\t").append(where);
+                    last.getAdditionalPartitionHasContainers().add(hasContainer);
+                    triple.setRight(true);
+                }
+            }
+        }
+        triple.setMiddle(sb.toString());
+        sqls.add(triple);
 
         if (queryTraversesEdge) {
             sb = new StringBuilder();
@@ -4364,16 +4151,16 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     sb.append(maybeWrapInQoutes(identifier));
                     sb.append(" = todelete.");
                     sb.append(maybeWrapInQoutes(lastEdge.lastMappedAliasIdentifier(identifier)));
-                    if (count++ < lastEdgeLabel.getIdentifiers().size()) {
+                    if (count++ < lastEdge.getIdentifiers().size()) {
                         sb.append(" AND\n");
                     }
                 }
             }
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.EDGE, sb.toString(), lastEdge.getSchemaTable()));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.EDGE, sb.toString(), false));
         }
         //Enable the foreign key constraint
         if (queryTraversesEdge) {
-            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, "SET CONSTRAINTS ALL IMMEDIATE", null));
+            sqls.add(Triple.of(SqlgSqlExecutor.DROP_QUERY.ALTER, "SET CONSTRAINTS ALL IMMEDIATE", false));
         }
         return sqls;
     }
@@ -4604,9 +4391,9 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
     }
 
     @Override
-    public List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> sqlTruncate(SqlgGraph sqlgGraph, SchemaTable schemaTable) {
+    public List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> sqlTruncate(SqlgGraph sqlgGraph, SchemaTable schemaTable) {
         Preconditions.checkState(schemaTable.isWithPrefix(), "SqlDialect.sqlTruncate' schemaTable must start with a prefix %s or %s", Topology.VERTEX_PREFIX, Topology.EDGE_PREFIX);
-        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, SchemaTable>> result = new ArrayList<>();
+        List<Triple<SqlgSqlExecutor.DROP_QUERY, String, Boolean>> result = new ArrayList<>();
         Optional<Schema> schemaOptional = sqlgGraph.getTopology().getSchema(schemaTable.getSchema());
         Preconditions.checkState(schemaOptional.isPresent(), "BUG: %s not found in the topology.", schemaTable.getSchema());
         Schema schema = schemaOptional.get();
@@ -4646,7 +4433,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 Triple.of(
                         SqlgSqlExecutor.DROP_QUERY.TRUNCATE,
                         sql.toString(),
-                        schemaTable
+                        false
                 )
         );
         return result;
@@ -4666,7 +4453,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
     public List<Map<String, String>> getPartitions(Connection connection) {
         List<Map<String, String>> result = new ArrayList<>();
         try (Statement statement = connection.createStatement()) {
-            ResultSet resultSet = statement.executeQuery("with pg_partitioned_table as (select \n" +
+            String sql = "with pg_partitioned_table as (select \n" +
                     "    p.partrelid,\n" +
                     "    p.partstrat as partitionType,\n" +
                     "    p.partnatts,\n" +
@@ -4693,16 +4480,22 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                     "    p.partitionType,\n" +
                     "    p.\"partitionExpression1\",\n" +
                     "    p.\"partitionExpression2\",\n" +
-                    "    pg_get_expr(cl.relpartbound, cl.oid, true) as \"fromToIn\"\n" +
+                    "    pg_get_expr(cl.relpartbound, cl.oid, true) as \"fromToInModulusRemainder\"\n" +
                     "FROM\n" +
-                    "    sqlg_schema.\"" + Topology.VERTEX_PREFIX + "schema\" s join\n" +
+                    "    sqlg_schema.\"" + VERTEX_PREFIX + "schema\" s join\n" +
                     "\tpg_catalog.pg_namespace n on s.name = n.nspname join\n" +
                     "    pg_catalog.pg_class cl on cl.relnamespace = n.oid left join\n" +
                     "    pg_catalog.pg_inherits i on i.inhrelid = cl.oid left join\n" +
-                    "    pg_partitioned_table p on p.partrelid = cl.relfilenode\n" +
+//                    "    pg_partitioned_table p on p.partrelid = cl.relfilenode\n" +
+                    "    pg_partitioned_table p on p.partrelid = cl.oid\n" +
                     "WHERE\n" +
                     "\tcl.relkind <> 'S' AND " +
-                    "(p.\"partitionExpression1\" is not null or p.\"partitionExpression2\" is not null or cl.relpartbound is not null)");
+                    "(" +
+                    "p.\"partitionExpression1\" is not null " +
+                    "or p.\"partitionExpression2\" is not null " +
+                    "or cl.relpartbound is not null" +
+                    ")";
+            ResultSet resultSet = statement.executeQuery(sql);
             while (resultSet.next()) {
                 Map<String, String> row = new HashMap<>();
                 row.put("schema", resultSet.getString("schema"));
@@ -4711,7 +4504,7 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
                 row.put("partitionType", resultSet.getString("partitionType"));
                 row.put("partitionExpression1", resultSet.getString("partitionExpression1"));
                 row.put("partitionExpression2", resultSet.getString("partitionExpression2"));
-                row.put("fromToIn", resultSet.getString("fromToIn"));
+                row.put("fromToInModulusRemainder", resultSet.getString("fromToInModulusRemainder"));
                 result.add(row);
             }
             return result;
@@ -4755,12 +4548,28 @@ public class PostgresDialect extends BaseSqlDialect implements SqlBulkDialect {
             statement.execute("CREATE ROLE \"sqlgReadOnly\" WITH LOGIN PASSWORD 'sqlgReadOnly'");
             statement.execute("GRANT USAGE ON SCHEMA public TO \"sqlgReadOnly\"");
             statement.execute("GRANT USAGE ON SCHEMA sqlg_schema TO \"sqlgReadOnly\"");
-            statement.execute("GRANT USAGE ON SCHEMA gui_schema TO \"sqlgReadOnly\"");
             statement.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"sqlgReadOnly\"");
             statement.execute("GRANT SELECT ON ALL TABLES IN SCHEMA sqlg_schema TO \"sqlgReadOnly\"");
-            statement.execute("GRANT SELECT ON ALL TABLES IN SCHEMA gui_schema TO \"sqlgReadOnly\"");
         } catch (SQLException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    //    ALTER TABLE public."V_A" ALTER COLUMN "dateTime" TYPE timestamp;
+//    ALTER TABLE public."V_A" ALTER COLUMN "dateTimes" TYPE timestamp[];
+//    ALTER TABLE public."V_A" ALTER COLUMN "time" TYPE time;
+//    ALTER TABLE public."V_A" ALTER COLUMN "times" TYPE time[];
+    @Override
+    public boolean isTimestampz(String typeName) {
+        String localTypeName = typeName.toLowerCase();
+        switch (localTypeName) {
+            case "timestamptz":
+            case "_timestamptz":
+            case "timetz":
+            case "_timetz":
+                return true;
+            default:
+                return false;
         }
     }
 }
