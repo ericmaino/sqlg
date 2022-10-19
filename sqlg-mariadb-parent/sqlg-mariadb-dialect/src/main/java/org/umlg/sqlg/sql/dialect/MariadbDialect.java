@@ -291,6 +291,9 @@ public class MariadbDialect extends BaseSqlDialect {
         if (value instanceof JsonNode) {
             return;
         }
+        if (value instanceof UUID) {
+            return;
+        }
         if (value instanceof byte[]) {
             return;
         }
@@ -361,6 +364,8 @@ public class MariadbDialect extends BaseSqlDialect {
                 return new String[]{"VARCHAR(" + propertyType.getLength() + ")"};
             case JSON_ORDINAL:
                 return new String[]{"LONGTEXT"};
+            case UUID_ORDINAL:
+                return new String[]{"UUID"};
             case POINT_ORDINAL:
                 throw new IllegalStateException("MariaDb does not support gis types!");
             case POLYGON_ORDINAL:
@@ -1123,5 +1128,26 @@ public class MariadbDialect extends BaseSqlDialect {
             sql.append(";");
         }
         return sql.toString();
+    }
+
+    @Override
+    public String renameTable(String schema, String table, String newName) {
+        StringBuilder sql = new StringBuilder("RENAME TABLE ");
+        sql.append(maybeWrapInQoutes(schema));
+        sql.append(".");
+        sql.append(maybeWrapInQoutes(table));
+        sql.append(" TO ");
+        sql.append(maybeWrapInQoutes(schema));
+        sql.append(".");
+        sql.append(maybeWrapInQoutes(newName));
+        if (needsSemicolon()) {
+            sql.append(";");
+        }
+        return sql.toString();
+    }
+
+    @Override
+    public boolean supportsUUID() {
+        return false;
     }
 }

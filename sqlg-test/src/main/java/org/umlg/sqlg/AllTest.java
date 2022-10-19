@@ -25,6 +25,7 @@ import org.umlg.sqlg.test.graph.MidTraversalGraphTest;
 import org.umlg.sqlg.test.graph.TestEmptyGraph;
 import org.umlg.sqlg.test.graph.TestGraphStepWithIds;
 import org.umlg.sqlg.test.gremlincompile.*;
+import org.umlg.sqlg.test.idstep.TestIdStep;
 import org.umlg.sqlg.test.index.TestIndex;
 import org.umlg.sqlg.test.index.TestIndexOnPartition;
 import org.umlg.sqlg.test.index.TestIndexTopologyTraversal;
@@ -62,6 +63,7 @@ import org.umlg.sqlg.test.usersuppliedpk.topology.TestMultipleIDQuery;
 import org.umlg.sqlg.test.usersuppliedpk.topology.TestSimpleJoinGremlin;
 import org.umlg.sqlg.test.usersuppliedpk.topology.TestSimpleVertexEdgeGremlin;
 import org.umlg.sqlg.test.usersuppliedpk.topology.TestUserSuppliedPKTopology;
+import org.umlg.sqlg.test.uuid.TestUUID;
 import org.umlg.sqlg.test.vertex.*;
 import org.umlg.sqlg.test.vertexout.TestVertexOutWithHas;
 import org.umlg.sqlg.test.where.TestTraversalFilterStepBarrier;
@@ -111,7 +113,6 @@ import org.umlg.sqlg.test.where.TestTraversalFilterStepBarrier;
 
         TestNewVertex.class,
         TestEdgeCache.class,
-        TestVertexCache.class,
         TestTinkerpopBug.class,
         TestLoadSchemaViaNotify.class,
         TestCreateEdgeBetweenVertices.class,
@@ -184,7 +185,6 @@ import org.umlg.sqlg.test.where.TestTraversalFilterStepBarrier;
         TestOptionalWithOrder.class,
         TestMultipleLabels.class,
         TestColumnNamePropertyNameMapScope.class,
-        TestJNDIInitialization.class,
         TestSchemaTableTreeAndHasContainer.class,
         TestEscapedValues.class,
         TestRepeatStepOnEdges.class,
@@ -264,6 +264,7 @@ import org.umlg.sqlg.test.where.TestTraversalFilterStepBarrier;
         TestTraversalAddV.class,
         TestDataSource.class,
         TestCustomDataSource.class,
+        TestJNDIInitialization.class,
         TestReducing.class,
         TestReducingVertexStep.class,
         TestPartitionedDrop.class,
@@ -277,7 +278,16 @@ import org.umlg.sqlg.test.where.TestTraversalFilterStepBarrier;
         TestTopologyPropertyColumnRename.class,
         TestTopologyPropertyColumnRenameDistributed.class,
         TestTopologyVertexLabelRename.class,
-        TestTopologyVertexLabelRenameDistributed.class
+        TestTopologyVertexLabelRenameDistributed.class,
+        TestTopologyEdgeLabelRename.class,
+        TestTopologyVertexLabelWithIdentifiersRenameDistributed.class,
+        TestTopologyVertexLabelWithIdentifiersRename.class,
+        TestTopologyEdgeLabelWithIdentifiersRename.class,
+        TestTopologyEdgeLabelRenameDistributed.class,
+        TestUUID.class,
+        TestIdStep.class,
+        TestTopologyLock.class,
+        TestLoadEdgeWithSpecialCharacters.class
 
 })
 public class AllTest {

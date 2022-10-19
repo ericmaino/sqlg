@@ -13,7 +13,7 @@
     <groupId>org.umlg</groupId>
     <artifactId>sqlg</artifactId>
     <packaging>pom</packaging>
-    <version>2.1.6-SNAPSHOT</version>
+    <version>2.1.7-SNAPSHOT</version>
     <name>sqlg</name>
     <description>Sqlg is a tinkerpop 3 implementation on top of a rdbms.
     </description>
@@ -31,10 +31,10 @@
         <url>git@github.com:pietermartin/sqlg.git</url>
     </scm>
     <properties>
-        <sqlg.version>2.1.6-SNAPSHOT</sqlg.version>
+        <sqlg.version>2.1.7-SNAPSHOT</sqlg.version>
         <tinkerpop.version>3.5.1</tinkerpop.version>
-        <slf4j.version>1.7.25</slf4j.version>
-        <junit.version>4.13.1</junit.version>
+        <log4j2.version>2.17.0</log4j2.version>
+        <junit.version>4.13.2</junit.version>
     </properties>
     <developers>
         <developer>
@@ -101,23 +101,24 @@
                     <argLine>-Dbuild.dir=${project.build.directory}</argLine>
                     <includes>
                         <include>**/H2AllTest.java</include>
-<!--                        <include>**/SqlgH2StructureStandardTest.java</include>-->
-<!--                        <include>**/SqlgH2ProcessStandardTest.java</include>-->
-
-                        <include>**/SqlgPostgresStructureStandardTest.java</include>
-                        <include>**/SqlgPostgresProcessStandardTest.java</include>
-                        <include>**/PostgresAllTest.java</include>
+                        <include>**/SqlgH2StructureStandardTest.java</include>
+                        <include>**/SqlgH2ProcessStandardTest.java</include>
 
                         <include>**/SqlgHsqldbStructureStandardTest.java</include>
                         <include>**/SqlgHsqldbProcessStandardTest.java</include>
                         <include>**/HsqldbAllTest.java</include>
 
+                        <include>**/SqlgPostgresStructureStandardTest.java</include>
+                        <include>**/SqlgPostgresProcessStandardTest.java</include>
+                        <include>**/PostgresAllTest.java</include>
+
+                        <include>**/SqlgMariaDBProcessStandardTest.java</include>
+                        <include>**/MariadbAllTest.java</include>
+
 <!--                        <include>**/SqlgMSSqlServerStructureStandardTest.java</include>-->
 <!--                        <include>**/SqlgGraphMSSqlServerProcessStandardTest.java</include>-->
 <!--                        <include>**/MSSqlServerAllTest.java</include>-->
 
-<!--                        <include>**/SqlgMariaDBProcessStandardTest.java</include>-->
-                        <include>**/MariadbAllTest.java</include>
                     </includes>
                 </configuration>
             </plugin>
@@ -203,6 +204,7 @@
         <module>sqlg-doc</module>
         <module>sqlg-ui</module>
         <module>sqlg-gremlin-server</module>
+        <module>sqlg-jdbc-pool</module>
     </modules>
     <dependencyManagement>
         <dependencies>
@@ -246,6 +248,16 @@
             <dependency>
                 <groupId>org.umlg</groupId>
                 <artifactId>sqlg-core</artifactId>
+                <version>${sqlg.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.umlg</groupId>
+                <artifactId>sqlg-c3p0</artifactId>
+                <version>${sqlg.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.umlg</groupId>
+                <artifactId>sqlg-hikari</artifactId>
                 <version>${sqlg.version}</version>
             </dependency>
             <dependency>
@@ -342,6 +354,11 @@
                 <version>0.9.5.5</version>
             </dependency>
             <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>5.0.0</version>
+            </dependency>
+            <dependency>
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>[30.0-jre,)</version>
@@ -349,7 +366,7 @@
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
-                <version>2.10.0.pr1</version>
+                <version>2.13.2.1</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>
@@ -369,7 +386,7 @@
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-text</artifactId>
-                <version>1.9</version>
+                <version>1.10.0</version>
             </dependency>
             <dependency>
                 <groupId>io.projectreactor</groupId>

@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.umlg.sqlg.sql.dialect.SqlDialect;
 import org.umlg.sqlg.structure.PropertyType;
 import org.umlg.sqlg.structure.SchemaTable;
+import org.umlg.sqlg.structure.SqlgGraph;
 import org.umlg.sqlg.structure.TopologyChangeAction;
 import org.umlg.sqlg.util.ThreadLocalSet;
 
@@ -156,6 +157,11 @@ public class EdgeLabel extends AbstractLabel {
         this.topology = outVertexLabel.getSchema().getTopology();
     }
 
+    EdgeLabel(SqlgGraph sqlgGraph, String edgeLabelName, Map<String, PropertyType> properties, ListOrderedSet<String> identifiers) {
+        super(sqlgGraph, edgeLabelName, properties, identifiers);
+        this.topology = sqlgGraph.getTopology();
+    }
+
     EdgeLabel(Topology topology, String edgeLabelName) {
         super(topology.getSqlgGraph(), edgeLabelName, Collections.emptyMap(), new ListOrderedSet<>());
         this.topology = topology;
@@ -197,7 +203,7 @@ public class EdgeLabel extends AbstractLabel {
                 Preconditions.checkState(!this.getSchema().isSqlgSchema(), "schema may not be %s", SQLG_SCHEMA);
                 this.sqlgGraph.getSqlDialect().validateColumnName(column.getKey());
                 if (!this.uncommittedProperties.containsKey(column.getKey())) {
-                    this.getSchema().getTopology().lock();
+                    this.getSchema().getTopology().startSchemaChange();
                     if (getProperty(column.getKey()).isEmpty()) {
                         TopologyManager.addEdgeColumn(this.sqlgGraph, this.getSchema().getName(), EDGE_PREFIX + getLabel(), column, new ListOrderedSet<>());
                         addColumn(this.getSchema().getName(), EDGE_PREFIX + getLabel(), ImmutablePair.of(column.getKey(), column.getValue()));
@@ -797,7 +803,7 @@ public class EdgeLabel extends AbstractLabel {
         if (!foreignKeysContains(direction, vertexLabel)) {
             //Make sure the current thread/transaction owns the lock
             Schema schema = this.getSchema();
-            schema.getTopology().lock();
+            schema.getTopology().startSchemaChange();
             if (!foreignKeysContains(direction, vertexLabel)) {
                 SchemaTable foreignKeySchemaTable = SchemaTable.of(vertexLabel.getSchema().getName(), vertexLabel.getLabel());
                 TopologyManager.addLabelToEdge(this.sqlgGraph, this.getSchema().getName(), EDGE_PREFIX + getLabel(), direction == Direction.IN, foreignKeySchemaTable);
@@ -1175,7 +1181,7 @@ public class EdgeLabel extends AbstractLabel {
 
     @Override
     void removeProperty(PropertyColumn propertyColumn, boolean preserveData) {
-        this.getSchema().getTopology().lock();
+        this.getSchema().getTopology().startSchemaChange();
         if (!uncommittedRemovedProperties.contains(propertyColumn.getName())) {
             uncommittedRemovedProperties.add(propertyColumn.getName());
             TopologyManager.removeEdgeColumn(this.sqlgGraph, this.getSchema().getName(), EDGE_PREFIX + getLabel(), propertyColumn.getName());
@@ -1188,13 +1194,21 @@ public class EdgeLabel extends AbstractLabel {
 
     @Override
     void renameProperty(String name, PropertyColumn propertyColumn) {
-        Pair<String, String> namePair = Pair.of(propertyColumn.getName(), name);
-//        if (!this.uncommittedRenamedProperties.contains(namePair)) {
-//            this.uncommittedRenamedProperties.add(namePair);
-//            TopologyManager.renamePropertyColumn(this.sqlgGraph, getSchema().getName(), EDGE_PREFIX + getLabel(), propertyColumn.getName(), name);
-//            renameColumn(getSchema().getName(), EDGE_PREFIX + getLabel(), propertyColumn.getName(), name);
-//            this.getSchema().getTopology().fire(propertyColumn, namePair.getLeft(), TopologyChangeAction.UPDATE);
-//        }
+        this.getSchema().getTopology().startSchemaChange();
+        String oldName = propertyColumn.getName();
+        Pair<String, String> namePair = Pair.of(oldName, name);
+        if (!this.uncommittedRemovedProperties.contains(name)) {
+            this.uncommittedRemovedProperties.add(oldName);
+            PropertyColumn copy = new PropertyColumn(this, name, propertyColumn.getPropertyType());
+            this.uncommittedProperties.put(name, copy);
+            TopologyManager.renameEdgeLabelPropertyColumn(this.sqlgGraph, getSchema().getName(), EDGE_PREFIX + getLabel(), oldName, name);
+            renameColumn(getSchema().getName(), EDGE_PREFIX + getLabel(), oldName, name);
+            if (this.getIdentifiers().contains(oldName)) {
+                Preconditions.checkState(!this.renamedIdentifiers.contains(namePair), "BUG! renamedIdentifiers may not yet contain '%s'", oldName);
+                this.renamedIdentifiers.add(namePair);
+            }
+            this.getSchema().getTopology().fire(copy, propertyColumn, TopologyChangeAction.UPDATE);
+        }
     }
 
     @Override
@@ -1298,7 +1312,7 @@ public class EdgeLabel extends AbstractLabel {
         }
         for (VertexLabel inVertexLabel : this.inVertexLabels) {
             Optional<VertexLabel> foreignInVertexLabelOptional = foreignSchemas.stream()
-                    .filter(s -> s.getVertexLabel(inVertexLabel.getLabel()).isPresent())
+                    .filter(s -> s.getName().equals(inVertexLabel.getSchema().getName()) && s.getVertexLabel(inVertexLabel.getLabel()).isPresent())
                     .map(s -> s.getVertexLabel(inVertexLabel.getLabel()).orElseThrow())
                     .findAny();
             Preconditions.checkState(foreignInVertexLabelOptional.isPresent());
@@ -1309,30 +1323,133 @@ public class EdgeLabel extends AbstractLabel {
         for (String property : this.properties.keySet()) {
             copy.properties.put(property, this.properties.get(property).readOnlyCopy(copy));
         }
+        copy.identifiers.addAll(this.identifiers);
         return copy;
+    }
+
+    void renameOutForeignKeyIdentifier(String oldName, String newName, VertexLabel oldVertexLabel) {
+        renameInOutForeignKeyIdentifier(oldName, newName, oldVertexLabel, Direction.OUT);
+    }
+
+    void renameInForeignKeyIdentifier(String oldName, String newName, VertexLabel oldVertexLabel) {
+        renameInOutForeignKeyIdentifier(oldName, newName, oldVertexLabel, Direction.IN);
+    }
+
+    private void renameInOutForeignKeyIdentifier(String oldName, String newName, VertexLabel oldVertexLabel, Direction direction) {
+        Preconditions.checkState(!oldVertexLabel.hasIDPrimaryKey());
+        Optional<String> newIdentifierOptional = oldVertexLabel.getIdentifiers().stream().filter(i -> i.equals(newName)).findAny();
+        Preconditions.checkState(newIdentifierOptional.isPresent());
+        Preconditions.checkState(oldVertexLabel.renamedIdentifiers.stream().anyMatch(p -> p.getLeft().equals(oldName)));
+        renameColumn(
+                getSchema().getName(),
+                EDGE_PREFIX + getLabel(),
+                oldVertexLabel.getFullName() + "." + oldName + (direction == Direction.OUT ? Topology.OUT_VERTEX_COLUMN_END : IN_VERTEX_COLUMN_END),
+                oldVertexLabel.getFullName() + "." + newName + (direction == Direction.OUT ? Topology.OUT_VERTEX_COLUMN_END : IN_VERTEX_COLUMN_END)
+        );
     }
 
     void renameOutVertexLabel(VertexLabel renamedVertexLabel, VertexLabel oldVertexLabel) {
         this.uncommittedRemovedOutVertexLabels.add(oldVertexLabel);
         this.uncommittedOutVertexLabels.add(renamedVertexLabel);
         renamedVertexLabel.addToUncommittedOutEdgeLabels(renamedVertexLabel.getSchema(), this);
-        renameColumn(
-                getSchema().getName(),
-                EDGE_PREFIX + getLabel(),
-                oldVertexLabel.getFullName() + Topology.OUT_VERTEX_COLUMN_END,
-                renamedVertexLabel.getFullName() + Topology.OUT_VERTEX_COLUMN_END
-        );
+        if (oldVertexLabel.hasIDPrimaryKey()) {
+            renameColumn(
+                    getSchema().getName(),
+                    EDGE_PREFIX + getLabel(),
+                    oldVertexLabel.getFullName() + Topology.OUT_VERTEX_COLUMN_END,
+                    renamedVertexLabel.getFullName() + Topology.OUT_VERTEX_COLUMN_END
+            );
+        } else {
+            for (String identifier : oldVertexLabel.getIdentifiers()) {
+                renameColumn(
+                        getSchema().getName(),
+                        EDGE_PREFIX + getLabel(),
+                        oldVertexLabel.getFullName() + "." + identifier + Topology.OUT_VERTEX_COLUMN_END,
+                        renamedVertexLabel.getFullName() + "." + identifier + Topology.OUT_VERTEX_COLUMN_END
+                );
+            }
+        }
     }
 
     void renameInVertexLabel(VertexLabel renamedVertexLabel, VertexLabel oldVertexLabel) {
         this.uncommittedRemovedInVertexLabels.add(oldVertexLabel);
         this.uncommittedInVertexLabels.add(renamedVertexLabel);
         renamedVertexLabel.addToUncommittedInEdgeLabels(renamedVertexLabel.getSchema(), this);
-        renameColumn(
-                getSchema().getName(),
-                EDGE_PREFIX + getLabel(),
-                oldVertexLabel.getFullName() + Topology.IN_VERTEX_COLUMN_END,
-                renamedVertexLabel.getFullName() + Topology.IN_VERTEX_COLUMN_END
+        if (oldVertexLabel.hasIDPrimaryKey()) {
+            renameColumn(
+                    getSchema().getName(),
+                    EDGE_PREFIX + getLabel(),
+                    oldVertexLabel.getFullName() + Topology.IN_VERTEX_COLUMN_END,
+                    renamedVertexLabel.getFullName() + Topology.IN_VERTEX_COLUMN_END
+            );
+        } else {
+            for (String identifier : oldVertexLabel.getIdentifiers()) {
+                renameColumn(
+                        getSchema().getName(),
+                        EDGE_PREFIX + getLabel(),
+                        oldVertexLabel.getFullName() + "." + identifier + Topology.IN_VERTEX_COLUMN_END,
+                        renamedVertexLabel.getFullName() + "." + identifier + Topology.IN_VERTEX_COLUMN_END
+                );
+            }
+        }
+    }
+
+    @Override
+    public void rename(String label) {
+        Objects.requireNonNull(label, "Given label must not be null");
+        Preconditions.checkArgument(!label.startsWith(EDGE_PREFIX), "label may not be prefixed with \"%s\"", EDGE_PREFIX);
+        Preconditions.checkState(!this.isForeignAbstractLabel, "'%s' is a read only foreign table!", label);
+        this.getSchema().getTopology().startSchemaChange();
+        this.getSchema().renameEdgeLabel(this, label);
+    }
+
+    static EdgeLabel renameEdgeLabel(
+            SqlgGraph sqlgGraph,
+            Schema schema,
+            EdgeLabel oldEdgeLabel,
+            String newLabel,
+            Set<VertexLabel> outVertexLabels,
+            Set<VertexLabel> inVertexLabels,
+            Map<String, PropertyType> properties,
+            ListOrderedSet<String> identifiers) {
+
+        Preconditions.checkArgument(!schema.isSqlgSchema(), "renameEdgeLabel may not be called for \"%s\"", SQLG_SCHEMA);
+        EdgeLabel edgeLabel = new EdgeLabel(
+                sqlgGraph,
+                newLabel,
+                properties,
+                identifiers
         );
+        edgeLabel.uncommittedOutVertexLabels.addAll(outVertexLabels);
+        edgeLabel.uncommittedInVertexLabels.addAll(inVertexLabels);
+        edgeLabel.renameEdgeLabelOnDb(oldEdgeLabel.getLabel(), newLabel);
+        TopologyManager.renameEdgeLabel(sqlgGraph, schema.getName(), EDGE_PREFIX + oldEdgeLabel.getLabel(), EDGE_PREFIX + newLabel);
+        edgeLabel.committed = false;
+        for (VertexLabel outVertexLabel : outVertexLabels) {
+            outVertexLabel.removeOutEdge(oldEdgeLabel);
+            outVertexLabel.addToUncommittedOutEdgeLabels(edgeLabel.getSchema(), edgeLabel);
+        }
+        for (VertexLabel inVertexLabel : inVertexLabels) {
+            inVertexLabel.removeInEdge(oldEdgeLabel);
+            inVertexLabel.addToUncommittedInEdgeLabels(edgeLabel.getSchema(), edgeLabel);
+        }
+        return edgeLabel;
+    }
+
+    private void renameEdgeLabelOnDb(String oldLabel, String newLabel) {
+        String sql = this.sqlgGraph.getSqlDialect().renameTable(
+                getSchema().getName(),
+                EDGE_PREFIX + oldLabel,
+                EDGE_PREFIX + newLabel
+        );
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug(sql);
+        }
+        Connection conn = this.sqlgGraph.tx().getConnection();
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute(sql);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

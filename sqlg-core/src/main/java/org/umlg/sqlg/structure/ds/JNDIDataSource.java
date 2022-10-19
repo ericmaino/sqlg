@@ -29,8 +29,8 @@ public final class JNDIDataSource implements SqlgDataSource {
 
     public static SqlgDataSource create(Configuration configuration) throws NamingException, SQLException {
         String url = configuration.getString(SqlgGraph.JDBC_URL);
-        if (! isJNDIUrl(url)) {
-            throw new IllegalArgumentException("Creating JNDI ds from invalid url: "+url);
+        if (!isJNDIUrl(url)) {
+            throw new IllegalArgumentException("Creating JNDI ds from invalid url: " + url);
         }
 
         String jndiName = url.substring(JNDI_PREFIX.length());
@@ -69,18 +69,14 @@ public final class JNDIDataSource implements SqlgDataSource {
     @Override
     public String getPoolStatsAsJson() {
         try {
-            StringBuilder json = new StringBuilder();
-            json.append("[");
-
-            json.append("{\"jdbcUrl\":\"").append(jdbcUrl).append("\",");
-            json.append("\"jndi\": true");
-            json.append("}");
-
-
-            json.append("]");
-            return json.toString();
+            return "[" +
+                    "{\"jdbcUrl\":\"" + jdbcUrl + "\"," +
+                    "\"jndi\": true" +
+                    "}" +
+                    "]";
         } catch (Exception e) {
             throw new IllegalStateException("Json generation failed", e);
         }
     }
+
 }

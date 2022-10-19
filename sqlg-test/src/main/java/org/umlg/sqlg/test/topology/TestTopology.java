@@ -43,7 +43,7 @@ public class TestTopology extends BaseTest {
         Schema aSchema = this.sqlgGraph.getTopology().ensureSchemaExist("A");
         VertexLabel testVertexLabel = aSchema.ensureVertexLabelExist(
                 "TestA",
-                new LinkedHashMap<String, PropertyType>() {{
+                new LinkedHashMap<>() {{
                     put("uid", PropertyType.varChar(100));
                     put("name1", PropertyType.STRING);
                 }},
@@ -51,7 +51,7 @@ public class TestTopology extends BaseTest {
         );
         VertexLabel testTestVertexLabel = aSchema.ensureVertexLabelExist(
                 "TestB",
-                new LinkedHashMap<String, PropertyType>() {{
+                new LinkedHashMap<>() {{
                     put("uid", PropertyType.varChar(100));
                     put("name1", PropertyType.STRING);
                 }},
@@ -65,7 +65,7 @@ public class TestTopology extends BaseTest {
                 "e1",
                 testVertexLabel,
                 testTestVertexLabel,
-                new LinkedHashMap<String, PropertyType>() {{
+                new LinkedHashMap<>() {{
                     put("uid", PropertyType.varChar(100));
                     put("name1", PropertyType.STRING);
                 }},

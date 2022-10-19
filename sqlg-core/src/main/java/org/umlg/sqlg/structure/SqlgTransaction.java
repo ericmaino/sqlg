@@ -8,11 +8,12 @@ import org.apache.tinkerpop.gremlin.structure.util.TransactionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.umlg.sqlg.sql.dialect.SqlBulkDialect;
+import org.umlg.sqlg.structure.topology.Topology;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * This class is a singleton. Instantiated and owned by SqlGraph.
@@ -31,11 +32,12 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
     private AfterCommit afterCommitFunction;
     private AfterRollback afterRollbackFunction;
     private static final Logger LOGGER = LoggerFactory.getLogger(SqlgTransaction.class);
-    private final boolean cacheVertices;
 
     private final ThreadLocal<TransactionCache> threadLocalTx = ThreadLocal.withInitial(() -> null);
 
     private final ThreadLocal<PreparedStatementCache> threadLocalPreparedStatementTx = ThreadLocal.withInitial(PreparedStatementCache::new);
+
+    private final ThreadLocal<AtomicBoolean> threadLocalTopologyLocked = ThreadLocal.withInitial(() -> new AtomicBoolean(true));
 
     /**
      * default fetch size
@@ -43,10 +45,9 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
     private Integer defaultFetchSize = null;
 
 
-    SqlgTransaction(Graph sqlgGraph, boolean cacheVertices) {
+    SqlgTransaction(Graph sqlgGraph) {
         super(sqlgGraph);
         this.sqlgGraph = (SqlgGraph) sqlgGraph;
-        this.cacheVertices = cacheVertices;
     }
 
     @Override
@@ -70,9 +71,9 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
                 boolean lazy = this.sqlgGraph.getConfiguration().getBoolean(QUERY_LAZY, true);
                 TransactionCache tc;
                 if (supportsBatchMode()) {
-                    tc = TransactionCache.of(this.cacheVertices, connection, new BatchManager(this.sqlgGraph, ((SqlBulkDialect) this.sqlgGraph.getSqlDialect())), lazy);
+                    tc = TransactionCache.of(connection, new BatchManager(this.sqlgGraph, ((SqlBulkDialect) this.sqlgGraph.getSqlDialect())), lazy);
                 } else {
-                    tc = TransactionCache.of(this.cacheVertices, connection, lazy);
+                    tc = TransactionCache.of(connection, lazy);
                 }
                 tc.setFetchSize(getDefaultFetchSize());
                 this.threadLocalTx.set(tc);
@@ -89,6 +90,7 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
         }
         Connection connection = null;
         try {
+            this.threadLocalTopologyLocked.get().set(true);
             if (supportsBatchMode() && this.threadLocalTx.get().getBatchManager().isInBatchMode()) {
                 getBatchManager().flush();
             }
@@ -132,6 +134,7 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
         }
         Connection connection = null;
         try {
+            this.threadLocalTopologyLocked.get().set(true);
             if (supportsBatchMode() && this.threadLocalTx.get().getBatchManager().isInBatchMode()) {
                 try {
                     this.threadLocalTx.get().getBatchManager().close();
@@ -167,6 +170,21 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
                 this.threadLocalPreparedStatementTx.remove();
             }
         }
+    }
+
+    /**
+     * If {@link Topology#isLocked()} then this method will unlock the {@link Topology} for the duration of the transaction.
+     * It will automatically be locked again on commit or rollback.
+     */
+    public void unlockTopology() {
+        this.threadLocalTopologyLocked.get().set(false);
+    }
+
+    /**
+     * @return Returns false if the topology is unlocked or the current transaction has not unlocked it.
+     */
+    public boolean isTopologyLocked() {
+        return this.sqlgGraph.getTopology().isLocked() && this.threadLocalTopologyLocked.get().get();
     }
 
     public void streamingWithLockBatchModeOn() {
@@ -293,24 +311,6 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
         return this.threadLocalTx.get() != null;
     }
 
-    SqlgVertex putVertexIfAbsent(SqlgGraph sqlgGraph, String schema, String table, Long id) {
-        return this.threadLocalTx.get().putVertexIfAbsent(sqlgGraph, schema, table, id);
-    }
-
-    SqlgVertex putVertexIfAbsent(SqlgGraph sqlgGraph, String schema, String table, List<Comparable> identifiers) {
-        return this.threadLocalTx.get().putVertexIfAbsent(sqlgGraph, schema, table, identifiers);
-    }
-
-    //Called for vertices that exist but are not yet in the transaction cache
-    SqlgVertex putVertexIfAbsent(SqlgVertex sqlgVertex) {
-        return this.threadLocalTx.get().putVertexIfAbsent(sqlgVertex);
-    }
-
-    //Called for new vertices
-    void add(SqlgVertex sqlgVertex) {
-        this.threadLocalTx.get().add(sqlgVertex);
-    }
-
     public void add(PreparedStatement preparedStatement) {
         this.threadLocalPreparedStatementTx.get().add(preparedStatement);
     }
@@ -343,7 +343,7 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
     /**
      * get default fetch size
      *
-     * @return
+     * @return The default jdbc fetch size
      */
     private Integer getDefaultFetchSize() {
         return defaultFetchSize;
@@ -352,7 +352,7 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
     /**
      * set default fetch size
      *
-     * @param fetchSize
+     * @param fetchSize Set the jdbc fetch size
      */
     public void setDefaultFetchSize(Integer fetchSize) {
         this.defaultFetchSize = fetchSize;
@@ -361,7 +361,7 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
     /**
      * get fetch size for current transaction
      *
-     * @return
+     * @return The jdbc fetch for the current transaction
      */
     public Integer getFetchSize() {
         readWrite();
@@ -371,7 +371,7 @@ public class SqlgTransaction extends AbstractThreadLocalTransaction {
     /**
      * set fetch size for current transaction
      *
-     * @param fetchSize
+     * @param fetchSize Set the current transaction's jdbc fetch size
      */
     public void setFetchSize(Integer fetchSize) {
         readWrite();

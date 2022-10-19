@@ -41,7 +41,8 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
             configuration = configs.properties(sqlProperties);
             Assume.assumeTrue(isPostgres());
             configuration.addProperty("distributed", true);
-//            configuration.addProperty("maxPoolSize", 3);
+            configuration.addProperty("c3p0.maxPoolSize", 3);
+            configuration.addProperty("dataSource.maximumPoolSize", 3);
             if (!configuration.containsKey("jdbc.url"))
                 throw new IllegalArgumentException(String.format("SqlGraph configuration requires that the %s be set", "jdbc.url"));
 
@@ -130,7 +131,7 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
             for (Future<SqlgGraph> result : results) {
                 result.get(1, TimeUnit.MINUTES);
             }
-            Thread.sleep(10_000);
+            Thread.sleep(20_000);
             for (SqlgGraph graph : graphs) {
                 assertEquals(this.sqlgGraph.getTopology(), graph.getTopology());
                 for (Schema schema : graph.getTopology().getSchemas()) {
@@ -197,7 +198,7 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
             for (Future<SqlgGraph> result : results) {
                 result.get(1, TimeUnit.MINUTES);
             }
-            Thread.sleep(10_000);
+            Thread.sleep(20_000);
             for (SqlgGraph graph : graphs) {
                 assertEquals(this.sqlgGraph.getTopology(), graph.getTopology());
             }
@@ -250,8 +251,8 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
                                                 Assert.assertNotNull(edgeLabel);
                                                 final Random random = new Random();
                                                 if (random.nextBoolean()) {
-                                                    successfulSchemas.add(count);
                                                     sqlgGraphAsync.tx().commit();
+                                                    successfulSchemas.add(count);
                                                 } else {
                                                     sqlgGraphAsync.tx().rollback();
                                                 }
@@ -276,12 +277,12 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
             for (Future<SqlgGraph> result : results) {
                 result.get(5, TimeUnit.MINUTES);
             }
-            Thread.sleep(10_000);
+            Thread.sleep(20_000);
             for (SqlgGraph graph : graphs) {
                 assertEquals(this.sqlgGraph.getTopology(), graph.getTopology());
                 logger.info(graph.getTopology().toJson().toString());
-                assertEquals(successfulSchemas.size() + 1, this.sqlgGraph.getTopology().getSchemas().size());
-                assertEquals(successfulSchemas.size() + 1, graph.getTopology().getSchemas().size());
+                assertEquals("this.sqlGraph schema sizes mismatch", successfulSchemas.size() + 1, this.sqlgGraph.getTopology().getSchemas().size());
+                assertEquals("graph schema sizes mismatch", successfulSchemas.size() + 1, graph.getTopology().getSchemas().size());
                 if (!this.sqlgGraph.getTopology().toJson().equals(graph.getTopology().toJson())) {
                     for (Schema schema : this.sqlgGraph.getTopology().getSchemas()) {
                         Optional<Schema> otherSchema = graph.getTopology().getSchema(schema.getName());
@@ -330,7 +331,7 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
                 result.get(30, TimeUnit.SECONDS);
             }
             //Because of the rollBack logic the insert code may also create topology elements, so sleep a bit for notify to do its thing.
-            Thread.sleep(10_000);
+            Thread.sleep(20_000);
             logger.info("starting querying data");
             Set<Vertex> vertices = this.sqlgGraph.traversal().V().out().toSet();
             this.sqlgGraph.tx().rollback();
@@ -428,20 +429,23 @@ public class TestMultipleThreadMultipleJvm extends BaseTest {
             readPoolPerGraph.shutdown();
 
             for (Future<SqlgGraph> result : results) {
-                SqlgGraph graph = result.get(30, TimeUnit.SECONDS);
+                result.get(30, TimeUnit.SECONDS);
                 logger.info("graph results returned");
             }
             keepReading.set(false);
             for (Future<SqlgGraph> result : readResults) {
-                SqlgGraph g = result.get(30, TimeUnit.SECONDS);
+                result.get(30, TimeUnit.SECONDS);
                 logger.info("graph readResults returned");
             }
+            Thread.sleep(10_000);
             logger.info("starting querying data");
-            List<Vertex> vertices = this.sqlgGraph.traversal().V().out().toList();
+            Set<Vertex> vertices = this.sqlgGraph.traversal().V().out().toSet();
             this.sqlgGraph.tx().rollback();
             for (SqlgGraph graph : graphs) {
                 logger.info("assert querying data");
-                assertEquals(vertices, graph.traversal().V().out().toList());
+                Set<Vertex> other = graph.traversal().V().out().toSet();
+                Assert.assertEquals(vertices.size(), other.size());
+                Assert.assertEquals(vertices, other);
                 graph.tx().rollback();
             }
         } finally {

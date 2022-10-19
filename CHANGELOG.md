@@ -1,7 +1,18 @@
 ##2.1.6
 
+* Added tests for inserting via fdw on postgres for user identified elements
+* Added validation for inserting data via fdw on postgres.
+* Fixed [#451](https://github.com/pietermartin/sqlg/issues/451). Postgresql copy command did not take special characters into account.
+* Fixed [#450](https://github.com/pietermartin/sqlg/issues/450). Fixed a bunch of copy past errors in Sqlg's ddl statements.
+* Fixed [#446](https://github.com/pietermartin/sqlg/issues/446). Upgraded H2 to 2.1.210
+* Implemented [#334](https://github.com/pietermartin/sqlg/issues/332). Added `Topology.lock` and `Topology.unlock`. 
+* Upgrade postgresql jdbc driver to 42.3.1
+* Implemented [#361](https://github.com/pietermartin/sqlg/issues/361). Implements UUID support on postgresql, hsqldb and h2.
+* Implemented [#431](https://github.com/pietermartin/sqlg/issues/431). Optimizes `id()`.
+* Implemented [#139](https://github.com/pietermartin/sqlg/issues/139).
+Added `rename` to `VertexLabel`, `EdgeLabel` and `PropertyColumn`
 * BREAKING CHANGE: Changed `TopologyListener`'s interface, `oldValue` is now a `TopologyInf`
-*Implemented [#428](https://github.com/pietermartin/sqlg/issues/428). 
+* Implemented [#428](https://github.com/pietermartin/sqlg/issues/428). 
 Added ability to import foreign schemas and to import tables into an existing schema.
 Both import must be consistent, i.e. can not reference elements that are not being imported.
 

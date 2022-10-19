@@ -217,6 +217,7 @@ public class TestMultiThread extends BaseTest {
     public void testMultiThreadEdges() throws InterruptedException {
         //For some reason Maria don't like this one on teamcity
         Assume.assumeFalse(isMariaDb());
+        Assume.assumeFalse(isH2());
         Vertex v1 = sqlgGraph.addVertex(T.label, "Person", "name", "0");
         sqlgGraph.tx().commit();
         Set<Integer> tables = new ConcurrentSkipListSet<>();
@@ -340,13 +341,14 @@ public class TestMultiThread extends BaseTest {
      */
     @Test
     public void testMultipleGraphsMultipleLabels() throws Exception {
+        Assume.assumeTrue(isPostgres());
         URL sqlProperties = Thread.currentThread().getContextClassLoader().getResource("sqlg.properties");
         try {
             Configurations configs = new Configurations();
             configuration = configs.properties(sqlProperties);
-            Assume.assumeTrue(isPostgres());
             configuration.addProperty("distributed", true);
-            configuration.addProperty("maxPoolSize", 3);
+            configuration.addProperty("c3p0.maxPoolSize", 3);
+            configuration.addProperty("dataSource.maximumPoolSize", 3);
             if (!configuration.containsKey("jdbc.url"))
                 throw new IllegalArgumentException(String.format("SqlGraph configuration requires that the %s be set", "jdbc.url"));
 

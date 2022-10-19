@@ -44,9 +44,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
 
         super(sqlgGraph, schema, table);
         insertVertex(temporary, streaming, keyValueMapPair);
-        if (!sqlgGraph.tx().isInBatchMode()) {
-            sqlgGraph.tx().add(this);
-        }
     }
 
     SqlgVertex(SqlgGraph sqlgGraph, String table, Map<String, Object> keyValueMap) {
@@ -56,19 +53,11 @@ public class SqlgVertex extends SqlgElement implements Vertex {
     }
 
     public static SqlgVertex of(SqlgGraph sqlgGraph, Long id, String schema, String table) {
-        if (!sqlgGraph.tx().isInBatchMode()) {
-            return sqlgGraph.tx().putVertexIfAbsent(sqlgGraph, schema, table, id);
-        } else {
-            return new SqlgVertex(sqlgGraph, id, schema, table);
-        }
+        return new SqlgVertex(sqlgGraph, id, schema, table);
     }
 
     public static SqlgVertex of(SqlgGraph sqlgGraph, List<Comparable> identifiers, String schema, String table) {
-        if (!sqlgGraph.tx().isInBatchMode()) {
-            return sqlgGraph.tx().putVertexIfAbsent(sqlgGraph, schema, table, identifiers);
-        } else {
-            return new SqlgVertex(sqlgGraph, identifiers, schema, table);
-        }
+        return new SqlgVertex(sqlgGraph, identifiers, schema, table);
     }
 
     /**
@@ -170,6 +159,8 @@ public class SqlgVertex extends SqlgElement implements Vertex {
         EdgeLabel edgeLabel = this.sqlgGraph.getTopology().ensureEdgeLabelExist(label, outVertexLabelOptional.get(), inVertexLabelOptional.get(), columns);
         if (!edgeLabel.hasIDPrimaryKey()) {
             Preconditions.checkArgument(columns.keySet().containsAll(edgeLabel.getIdentifiers()), "identifiers must be present %s", edgeLabel.getIdentifiers());
+        } else if (edgeLabel.isForeign()) {
+            throw SqlgExceptions.invalidMode("Foreign EdgeLabel must have user defined identifiers to support addition.");
         }
         return new SqlgEdge(this.sqlgGraph, complete, this.schema, label, (SqlgVertex) inVertex, this, keyValueMapPair);
     }
@@ -187,13 +178,6 @@ public class SqlgVertex extends SqlgElement implements Vertex {
         if (this.removed) {
             throw new IllegalStateException(String.format("Vertex with id %s was removed.", id().toString()));
         } else {
-            if (!sqlgGraph.tx().isInBatchMode()) {
-                SqlgVertex sqlgVertex = this.sqlgGraph.tx().putVertexIfAbsent(this);
-                if (sqlgVertex != this) {
-                    //sync the properties
-                    this.properties = sqlgVertex.properties;
-                }
-            }
             return (VertexProperty<V>) super.property(key);
         }
     }

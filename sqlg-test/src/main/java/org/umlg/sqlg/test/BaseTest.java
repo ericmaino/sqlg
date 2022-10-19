@@ -5,7 +5,10 @@ import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.commons.configuration2.builder.fluent.Configurations;
 import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.lang3.time.StopWatch;
-import org.apache.log4j.Level;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.tinkerpop.gremlin.AbstractGremlinTest;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
@@ -19,13 +22,14 @@ import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONIo;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONVersion;
 import org.apache.tinkerpop.gremlin.util.iterator.IteratorUtils;
 import org.hamcrest.CoreMatchers;
+import org.hamcrest.MatcherAssert;
 import org.junit.*;
 import org.junit.rules.TestRule;
 import org.junit.rules.TestWatcher;
 import org.junit.runner.Description;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.umlg.sqlg.TestAppender;
+import org.umlg.sqlg.Log4j2TestAppender;
 import org.umlg.sqlg.sql.parse.ReplacedStep;
 import org.umlg.sqlg.step.SqlgGraphStep;
 import org.umlg.sqlg.step.SqlgStep;
@@ -54,7 +58,7 @@ import static org.junit.Assert.*;
  */
 public abstract class BaseTest {
 
-    private static final Logger logger = LoggerFactory.getLogger(BaseTest.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(BaseTest.class.getName());
     protected SqlgGraph sqlgGraph;
     protected SqlgGraph sqlgGraph1;
     protected GraphTraversalSource gt;
@@ -66,7 +70,7 @@ public abstract class BaseTest {
     public TestRule watcher = new TestWatcher() {
         protected void starting(Description description) {
             BaseTest.this.start = System.currentTimeMillis();
-            logger.info("Starting test: " + description.getClassName() + "." + description.getMethodName());
+            LOGGER.info("Starting test: " + description.getClassName() + "." + description.getMethodName());
         }
 
         protected void finished(Description description) {
@@ -76,7 +80,7 @@ public abstract class BaseTest {
                     TimeUnit.MILLISECONDS.toSeconds(millis) - TimeUnit.MINUTES.toSeconds(TimeUnit.MILLISECONDS.toMinutes(millis)),
                     TimeUnit.MILLISECONDS.toMillis(millis) - TimeUnit.SECONDS.toMillis(TimeUnit.MILLISECONDS.toSeconds(millis))
             );
-            logger.info(String.format("Finished test: %s.%s Time taken: %s", description.getClassName(), description.getMethodName(), time));
+            LOGGER.info(String.format("Finished test: %s.%s Time taken: %s", description.getClassName(), description.getMethodName(), time));
         }
     };
 
@@ -113,7 +117,7 @@ public abstract class BaseTest {
             assertEquals(this.sqlgGraph.getBuildVersion(), this.sqlgGraph1.getBuildVersion());
         }
         stopWatch.stop();
-        logger.info("Startup time for test = " + stopWatch);
+        LOGGER.info("Startup time for test = " + stopWatch);
     }
 
     protected void grantReadOnlyUserPrivileges() {
@@ -127,7 +131,7 @@ public abstract class BaseTest {
             this.sqlgGraph.tx().onClose(Transaction.CLOSE_BEHAVIOR.ROLLBACK);
             this.sqlgGraph.close();
         } catch (Exception e) {
-            logger.error(e.getMessage(), e);
+            LOGGER.error(e.getMessage(), e);
         }
         try {
             if (this.sqlgGraph1 != null) {
@@ -135,7 +139,7 @@ public abstract class BaseTest {
                 this.sqlgGraph1.close();
             }
         } catch (Exception e) {
-            logger.error(e.getMessage(), e);
+            LOGGER.error(e.getMessage(), e);
         }
     }
 
@@ -166,7 +170,7 @@ public abstract class BaseTest {
     /**
      * return a clone of the configuration
      *
-     * @return
+     * @return Sqlg's configuration
      */
     protected static Configuration getConfigurationClone() {
         Configuration conf = new PropertiesConfiguration();
@@ -238,8 +242,8 @@ public abstract class BaseTest {
                 if (this.sqlgGraph.getSqlDialect().needsSemicolon()) {
                     sql.append(";");
                 }
-                if (logger.isDebugEnabled()) {
-                    logger.debug(sql.toString());
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug(sql.toString());
                 }
                 try (ResultSet rs = stmt.executeQuery(sql.toString())) {
                     int countRows = 0;
@@ -258,12 +262,13 @@ public abstract class BaseTest {
     /**
      * print the traversal before and after execution
      *
-     * @param traversal
+     * @param traversal The traversal to print.
      */
     protected void printTraversalForm(final Traversal<?, ?> traversal) {
         final boolean muted = Boolean.parseBoolean(System.getProperty("muteTestLogs", "false"));
 
         if (!muted) System.out.println("   pre-strategy:" + traversal);
+        //noinspection ResultOfMethodCallIgnored
         traversal.hasNext();
         if (!muted) System.out.println("  post-strategy:" + traversal);
     }
@@ -271,24 +276,23 @@ public abstract class BaseTest {
     /**
      * print the traversal before and after execution, and return the last SQL generated
      *
-     * @param traversal
+     * @param traversal The traversal that will execute some sql.
      * @return the SQL or null
      */
     protected String getSQL(final Traversal<?, ?> traversal) {
-        org.apache.log4j.Logger l = org.apache.log4j.Logger.getLogger(SqlgSqlExecutor.class);
-        Level old = l.getLevel();
+        final LoggerContext ctx = (LoggerContext) LogManager.getContext(false);
+        final org.apache.logging.log4j.core.config.Configuration config = ctx.getConfiguration();
+        LoggerConfig loggerConfig = config.getLoggerConfig(SqlgSqlExecutor.class.getName());
+        Level old = loggerConfig.getLevel();
         try {
-            l.setLevel(Level.DEBUG);
+            loggerConfig.setLevel(Level.DEBUG);
+            ctx.updateLoggers();
             printTraversalForm(traversal);
-            org.apache.log4j.spi.LoggingEvent evt = TestAppender.getLast(SqlgSqlExecutor.class.getName());
-            if (evt != null) {
-                return String.valueOf(evt.getMessage());
-            }
-            return null;
+            return Log4j2TestAppender.last(SqlgSqlExecutor.class.getName());
         } finally {
-            l.setLevel(old);
+            loggerConfig.setLevel(old);
+            ctx.updateLoggers();
         }
-
     }
 
     protected void loadModern(SqlgGraph sqlgGraph) {
@@ -353,7 +357,7 @@ public abstract class BaseTest {
         assertToyGraph(g1, assertDouble, lossyForId, true);
     }
 
-    private static void assertToyGraph(final Graph g1, final boolean assertDouble, final boolean lossyForId, final boolean assertSpecificLabel) {
+    private static void assertToyGraph(final Graph g1, final boolean assertDouble, final boolean lossyForId, @SuppressWarnings("SameParameterValue") final boolean assertSpecificLabel) {
         assertEquals(Long.valueOf(6), g1.traversal().V().count().next());
         assertEquals(Long.valueOf(6), g1.traversal().E().count().next());
 
@@ -548,36 +552,38 @@ public abstract class BaseTest {
     }
 
     //copied from TinkerPop
+    @SuppressWarnings({"DuplicatedCode", "rawtypes"})
     protected static <T> void checkResults(final List<T> expectedResults, final Traversal<?, T> traversal) {
         final List<T> results = traversal.toList();
         Assert.assertFalse(traversal.hasNext());
         if (expectedResults.size() != results.size()) {
-            logger.error("Expected results: " + expectedResults);
-            logger.error("Actual results:   " + results);
+            LOGGER.error("Expected results: " + expectedResults);
+            LOGGER.error("Actual results:   " + results);
             Assert.assertEquals("Checking result size", expectedResults.size(), results.size());
         }
 
         for (T t : results) {
             if (t instanceof Map) {
                 //noinspection unchecked
-                Assert.assertThat("Checking map result existence: " + t, expectedResults.stream().filter(e -> e instanceof Map).anyMatch(e -> internalCheckMap((Map) e, (Map) t)), CoreMatchers.is(true));
+                MatcherAssert.assertThat("Checking map result existence: " + t, expectedResults.stream().filter(e -> e instanceof Map).anyMatch(e -> internalCheckMap((Map) e, (Map) t)), CoreMatchers.is(true));
             } else {
-                Assert.assertThat("Checking result existence: " + t, expectedResults.contains(t), CoreMatchers.is(true));
+                MatcherAssert.assertThat("Checking result existence: " + t, expectedResults.contains(t), CoreMatchers.is(true));
             }
         }
         final Map<T, Long> expectedResultsCount = new HashMap<>();
         final Map<T, Long> resultsCount = new HashMap<>();
         Assert.assertEquals("Checking indexing is equivalent", expectedResultsCount.size(), resultsCount.size());
-        expectedResults.forEach(t -> MapHelper.incr(expectedResultsCount, t, 1l));
-        results.forEach(t -> MapHelper.incr(resultsCount, t, 1l));
+        expectedResults.forEach(t -> MapHelper.incr(expectedResultsCount, t, 1L));
+        results.forEach(t -> MapHelper.incr(resultsCount, t, 1L));
         expectedResultsCount.forEach((k, v) -> Assert.assertEquals("Checking result group counts", v, resultsCount.get(k)));
-        Assert.assertThat(traversal.hasNext(), CoreMatchers.is(false));
+        MatcherAssert.assertThat(traversal.hasNext(), CoreMatchers.is(false));
     }
 
 
+    @SuppressWarnings("DuplicatedCode")
     private static <A, B> boolean internalCheckMap(final Map<A, B> expectedMap, final Map<A, B> actualMap) {
-        final List<Map.Entry<A, B>> actualList = actualMap.entrySet().stream().sorted((a, b) -> a.getKey().toString().compareTo(b.getKey().toString())).collect(Collectors.toList());
-        final List<Map.Entry<A, B>> expectedList = expectedMap.entrySet().stream().sorted((a, b) -> a.getKey().toString().compareTo(b.getKey().toString())).collect(Collectors.toList());
+        final List<Map.Entry<A, B>> actualList = actualMap.entrySet().stream().sorted(Comparator.comparing(a -> a.getKey().toString())).collect(Collectors.toList());
+        final List<Map.Entry<A, B>> expectedList = expectedMap.entrySet().stream().sorted(Comparator.comparing(a -> a.getKey().toString())).collect(Collectors.toList());
 
         if (expectedList.size() != actualList.size()) {
             return false;
@@ -594,7 +600,7 @@ public abstract class BaseTest {
         return true;
     }
 
-    protected void assertStep(Step<?, ?> step, boolean isGraph, boolean isEagerLoad, boolean isForMultipleQueries, boolean comparatorsNotOnDb, boolean rangeOnDb) {
+    protected void assertStep(Step<?, ?> step, @SuppressWarnings("SameParameterValue") boolean isGraph, boolean isEagerLoad, boolean isForMultipleQueries, boolean comparatorsNotOnDb, boolean rangeOnDb) {
         if (isGraph) {
             Assert.assertTrue("Expected SqlgGraphStep, found " + step.getClass().getName(), step instanceof SqlgGraphStep);
         } else {
@@ -627,6 +633,7 @@ public abstract class BaseTest {
         Assert.assertEquals("comparatorsNotOnDb should be " + comparatorsNotOnDb, comparatorsNotOnDb, sqlgStep.getReplacedSteps().stream().allMatch(r -> r.getDbComparators().isEmpty()));
     }
 
+    @SuppressWarnings("SameParameterValue")
     protected void assertStep(Step<?, ?> step, boolean isGraph, boolean isEagerLoad, boolean comparatorsNotOnDb) {
         if (isGraph) {
             Assert.assertTrue("Expected SqlgGraphStep, found " + step.getClass().getName(), step instanceof SqlgGraphStep);
@@ -651,6 +658,7 @@ public abstract class BaseTest {
         return mapList;
     }
 
+    @SuppressWarnings("TypeParameterHidesVisibleType")
     protected <T> void checkOrderedResults(final List<T> expectedResults, final Traversal<?, T> traversal) {
         final List<T> results = traversal.toList();
         assertFalse(traversal.hasNext());

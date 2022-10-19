@@ -232,6 +232,10 @@ import static org.apache.tinkerpop.gremlin.structure.Graph.OptOut;
         test = "org.apache.tinkerpop.gremlin.process.traversal.step.map.WriteTest",
         method = "g_io_writeXkryoX",
         reason = "Needs to register SqlgIoRegistryV3, this test is duplicated in TestIo")
+@OptOut(
+        test = "org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasTest",
+        method = "g_V_hasXk_withinXcXX_valuesXkX",
+        reason = "Fails for MariaDb, the test is copied to TestHas for the other dbs")
 public class SqlgGraph implements Graph {
 
     public static final String DATA_SOURCE = "sqlg.dataSource";
@@ -341,7 +345,7 @@ public class SqlgGraph implements Graph {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        this.sqlgTransaction = new SqlgTransaction(this, this.configuration.getBoolean("cache.vertices", false));
+        this.sqlgTransaction = new SqlgTransaction(this);
 
         // read fetch size from configuration, use default as specified in the dialect
         // this can be very useful for Postgres since according to < https://jdbc.postgresql.org/documentation/head/query.html#query-with-cursor>
@@ -419,6 +423,8 @@ public class SqlgGraph implements Graph {
             VertexLabel vertexLabel = this.getTopology().ensureVertexLabelExist(schemaTablePair.getSchema(), schemaTablePair.getTable(), columns);
             if (!vertexLabel.hasIDPrimaryKey()) {
                 Preconditions.checkArgument(columns.keySet().containsAll(vertexLabel.getIdentifiers()), "identifiers must be present %s", vertexLabel.getIdentifiers());
+            } else if (vertexLabel.isForeign()) {
+                throw SqlgExceptions.invalidMode("Foreign VertexLabel must have user defined identifiers to support addition.");
             }
             return new SqlgVertex(this, false, false, schemaTablePair.getSchema(), schemaTablePair.getTable(), keyValueMapPair);
         }

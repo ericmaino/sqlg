@@ -47,12 +47,10 @@ public class TestDataSource {
     }
 
     @Test
-    public void testQueryEmptyGraph() {
+    public void testQueryEmptyGraph() throws InterruptedException {
         for (int i = 0; i < 100; i++) {
             Assume.assumeTrue(this.configuration.getString("jdbc.url").contains("postgresql"));
             try {
-//                Configuration readOnlyConfiguration = new PropertiesConfiguration("sqlg.readonly.properties");
-
                 Configurations readOnlyConfiguration = new Configurations();
                 configuration = readOnlyConfiguration.properties("sqlg.readonly.properties");
                 try (SqlgGraph ignored = SqlgGraph.open(configuration)) {
@@ -64,11 +62,12 @@ public class TestDataSource {
                 Assert.fail(e.getMessage());
             }
         }
+        Thread.sleep(30_000);
         int count = countConnections();
-        //7 is a tad arbitary, not really getting it.
-        //C3P0 has 3 helper threads, looks like they hang around after closing the datasource. going with 7 for good measure.
-
+        //7 is a tad arbitrary, not really getting it.
+        //C3P0 has 3 helper threads, looks like they hang around after closing the datasource. going with 12 for good measure.
         //Setting the dataSource = null in C3P0DataSource.close(), looks like the count is 0 now.
+        System.out.println(count);
         Assert.assertTrue(String.format("Expected count < 12, found %d",  count), count < 12);
     }
 
